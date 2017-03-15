@@ -14,6 +14,10 @@
                   :create-job-request-out (chan)
                   :create-job-response-in (chan)
                   :create-job-response-out (chan)
+                  :close-job-request-in (chan)
+                  :close-job-request-out (chan)
+                  :close-job-response-in (chan)
+                  :close-job-response-out (chan)
                   :debug (chan)}
         route (fn [from to]
                 ;(pipe (get channels from) (get channels to) false))]
@@ -23,7 +27,9 @@
     (route :login-request-out :login-response-in)
     (route :login-response-out :create-job-request-in)
     (route :create-job-request-out :create-job-response-in)
-    (route :create-job-response-out :debug)
+    (route :create-job-response-out :close-job-request-in)
+    (route :close-job-request-out :close-job-response-in)
+    (route :close-job-response-out :debug)
     (info "Created channels")
     channels)
 

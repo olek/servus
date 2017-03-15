@@ -1,4 +1,4 @@
-(ns servus.create-job-response
+(ns servus.close-job-response
   (:require [clojure.core.async :refer [<! >!! go-loop]]
             [clojure.tools.logging :refer [info warn]]
             [clojure.xml :as xml]
@@ -25,20 +25,20 @@
 
 
 (defn process [username {:keys [response session]}]
-  (>!! (:create-job-response-out channels)
+  (>!! (:close-job-response-out channels)
        [username (assoc session :job-id (extract-job-id response))]))
 
 (defstate ^:private engine
   :start
-  (let [ch (:create-job-response-in channels)
+  (let [ch (:close-job-response-in channels)
         quit-atom (atom false)]
     (go-loop [input :start]
       (condp = input
         :start
-        (info "Waiting for create job responses...")
+        (info "Waiting for close job responses...")
 
         nil
-        (info "Not waiting for create job responses anymore, exiting")
+        (info "Not waiting for close job responses anymore, exiting")
 
         (apply process input))
       (when (and (not @quit-atom) input)

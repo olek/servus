@@ -1,4 +1,4 @@
-(ns servus.create-job-request
+(ns servus.close-job-request
   (:require [clojure.core.async :refer [<! >!! go-loop chan close!]]
             [clojure.tools.logging :refer [info warn]]
             [clostache.parser :refer [render-resource]]
@@ -23,25 +23,24 @@
                         "X-SFDC-Session" session-id
                         "Accept" "application/json"}}
              (fn [response]
-               (>!! (:create-job-request-out channels) [username {:response response
-                                                                  :session session}])
+               (>!! (:close-job-request-out channels) [username {:response response
+                                                                 :session session}])
                response)))
 
-(defn- process [username {:keys [session-id server-instance] :as session}]
-  (non-login username session "job" "create-job" {:object "Case"}))
-             ; #(info "Extracted JobID" (extract-job-id %))))
+(defn- process [username {:keys [job-id] :as session}]
+  (non-login username session (str "job/" job-id) "close-job" {}))
 
 (defstate ^:private engine
   :start
-  (let [ch (:create-job-request-in channels)
+  (let [ch (:close-job-request-in channels)
         quit-atom (atom false)]
     (go-loop [input :start]
       (condp = input
         :start
-        (info "Waiting for create job requests...")
+        (info "Waiting for close job requests...")
 
         nil
-        (info "Not waiting for create job requests anymore, exiting")
+        (info "Not waiting for close job requests anymore, exiting")
 
         (apply process input))
       (when (and (not @quit-atom) input)
