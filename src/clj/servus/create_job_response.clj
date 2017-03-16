@@ -1,32 +1,14 @@
 (ns servus.create-job-response
   (:require [clojure.core.async :refer [<! >!! go-loop]]
             [clojure.tools.logging :refer [info warn]]
-            [clojure.xml :as xml]
-            [desk.util.debug :refer [pprint-map]]
             [environ.core :refer [env]]
             [mount.core :refer [defstate]]
+            [servus.bulk-api :as bulk-api]
             [servus.channels :refer [channels]]))
 
-(defn- xml-node-content [xml node-name]
-  (->> xml
-       xml-seq
-       (filter #(= (:tag %) node-name))
-       first
-       :content
-       first))
-
-(defn- extract-job-id [response]
-  (let [response-seq (->> response
-                          :body
-                          .getBytes
-                          java.io.ByteArrayInputStream.
-                          xml/parse)]
-    (xml-node-content response-seq :id)))
-
-
-(defn process [username {:keys [response session]}]
+(defn- process [username {:keys [response session]}]
   (>!! (:create-job-response-out channels)
-       [username (assoc session :job-id (extract-job-id response))]))
+       [username (assoc session :job-id (bulk-api/parse-and-extract response :id))]))
 
 (defstate ^:private engine
   :start

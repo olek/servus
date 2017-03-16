@@ -1,33 +1,17 @@
 (ns servus.login-response
   (:require [clojure.core.async :refer [<! >!! go-loop]]
             [clojure.tools.logging :refer [info warn]]
-            [clojure.xml :as xml]
-            [desk.util.debug :refer [pprint-map]]
             [environ.core :refer [env]]
             [mount.core :refer [defstate]]
+            [servus.bulk-api :as bulk-api]
             [servus.channels :refer [channels]]))
 
-(defn- xml-node-content [xml node-name]
-  (->> xml
-       xml-seq
-       (filter #(= (:tag %) node-name))
-       first
-       :content
-       first))
-
-(defn- extract-session-id-server-host [response]
-  (let [response-seq (->> response
-                          :body
-                          .getBytes
-                          java.io.ByteArrayInputStream.
-                          xml/parse)]
-    {:session-id (xml-node-content response-seq :sessionId)
-     :server-instance (-> #"\w+.salesforce.com"
-                          (re-find (xml-node-content response-seq :serverUrl)))}))
-
-(defn process [username response]
+(defn- process [username response]
   (>!! (:login-response-out channels)
-       [username (extract-session-id-server-host response)]))
+       [username (let [data (bulk-api/parse-and-extract response :sessionId :serverUrl)]
+                   {:session-id (:sessionId data)
+                    :server-instance (-> #"\w+.salesforce.com"
+                                         (re-find (:serverUrl data)))})]))
 
 (defstate ^:private engine
   :start
