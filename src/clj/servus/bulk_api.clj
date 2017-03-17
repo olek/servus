@@ -5,7 +5,8 @@
             [clojure.xml :as xml]
             [clojure.core.async :refer [<! >!! go-loop]]
             [mount.core :refer [defstate]]
-            [servus.channels :refer [channels]]))
+            [servus.channels :refer [channels]]
+            [clojure.string :as s]))
 
 (def ^:private socket-timeout 3000) ; in ms
 (def ^:private keepalive 0) ; in ms
@@ -20,12 +21,16 @@
        :content
        first))
 
-(defn parse-response-body [response]
-  (->> response
-       :body
+(defn parse-xml [body]
+  (->> body
        .getBytes
        java.io.ByteArrayInputStream.
        xml/parse))
+
+(defn parse-response-body [response]
+  (->> response
+       :body
+       parse-xml))
 
 (defn parse-and-extract
   [response & tags]
@@ -39,14 +44,19 @@
 (defn- generate-payload [template data]
   (render-resource (str "templates/" template ".xml.mustache") data))
 
-(defn- do-request [url body headers handler]
-  (http/post url
-             {:body body
-              :timeout socket-timeout
-              :keepalive keepalive
-              :headers (merge {"Content-Type" "text/xml; charset=UTF-8"}
-                              headers)}
-             handler))
+(defn- compress-xml [body]
+  (s/replace (with-out-str (xml/emit (parse-xml body))) #"[\n\r]" ""))
+
+(defn- do-request [username url body headers handler]
+  (let [compressed-body (compress-xml body)]
+    (info (str "Request [" username "]") url compressed-body headers)
+    (http/post url
+               {:body compressed-body
+                :timeout socket-timeout
+                :keepalive keepalive
+                :headers (merge {"Content-Type" "text/xml; charset=UTF-8"}
+                                headers)}
+               handler)))
 
 (defn request [username
                {:keys [session-id server-instance]}
@@ -54,13 +64,15 @@
                template
                data
                handler]
-  (do-request (str "https://" server-instance service-prefix path)
+  (do-request username
+              (str "https://" server-instance service-prefix path)
               (generate-payload template data)
               {"X-SFDC-Session" session-id}
               handler))
 
 (defn login-request [username password handler]
-  (do-request login-url
+  (do-request username
+              login-url
               (generate-payload "login" {:username username
                                          :password password})
               {"SOAPAction" "login"}

@@ -41,4 +41,4 @@
                  input-message)
         data (or (:body data)
                  data)]
-    (info (str "[" (first input-message) "]") (pr-str data))))
+    (info (str "Response [" (first input-message) "]") (pr-str data))))
