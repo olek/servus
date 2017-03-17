@@ -2,31 +2,29 @@
   (:require [clojure.tools.logging :refer [info warn]]
             [clojure.core.async :refer [<! >!! go-loop]]
             [mount.core :refer [defstate]]
-            [servus.channels :refer [channels]]))
+            [servus.channels :refer [channel-for]]))
 
 (defmacro create-engine [ref & code]
-  (let [input-channel (keyword (str (name ref) "-in"))
-        output-channel (keyword (str (name ref) "-out"))
-        engine-name (gensym (str "engine-" (name ref)))]
+  (let [engine-name (gensym (str "engine-" (name ref)))]
     `(defstate ^:private ~engine-name
        :start
-       (let [ch# (get channels ~input-channel)
+       (let [ch# (channel-for ~ref :in)
              quit-atom# (atom false)
              output-handler# (fn self#
                                ([input-message# response#]
                                 (self# input-message# response# {}))
                                ([[username# session#] response# session-overrides#]
-                                (>!! (get channels ~output-channel) [username# (merge session#
-                                                                                      session-overrides#
-                                                                                      {:response response#})])))]
+                                (>!! (channel-for ~ref :out) [username# (merge session#
+                                                                               session-overrides#
+                                                                               {:response response#})])))]
          ;; TODO catch all errors in go-loop
          (go-loop [~'input-message :start]
            (condp = ~'input-message
              :start
-             (info "Waiting for requests on" ~input-channel "channel...")
+             (info "Waiting for requests for " ~ref "engine...")
 
              nil
-             (info "Not waiting for requests on" ~input-channel "channel anymore, exiting")
+             (info "Not waiting for requests for" ~ref "engine anymore, exiting")
 
              ;           (apply process ~'input-message)
              (let [~'output-handler (partial output-handler# ~'input-message)]

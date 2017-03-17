@@ -3,9 +3,7 @@
             [org.httpkit.client :as http]
             [clostache.parser :refer [render-resource]]
             [clojure.xml :as xml]
-            [clojure.core.async :refer [<! >!! go-loop]]
             [mount.core :refer [defstate]]
-            [servus.channels :refer [channels]]
             [clojure.string :as s]))
 
 (def ^:private socket-timeout 3000) ; in ms
