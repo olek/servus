@@ -20,16 +20,44 @@
 
 (create-engine :create-job-request
   (let [[username session] input-message]
-    (bulk-api/request username session "job" "create-job" {:object "Case"} output-handler)))
+    (bulk-api/request "job"
+                      username
+                      {:session session
+                       :template "create-job.xml"
+                       :data {:object "Case"}}
+                      output-handler)))
 
 (create-engine :create-job-response
   (let [response (:response (last input-message))
         job-id (bulk-api/parse-and-extract response :id)]
     (output-handler job-id {:job-id job-id})))
 
+(create-engine :create-batch-request
+  (let [[username session] input-message]
+    (bulk-api/request (str "job/" (:job-id session) "/batch")
+                      username
+                      {:session session
+                       :template "create-batch.sql"
+                       :data {:object "Case"
+                              :fields "Subject"
+                              :limit 2}}
+                      output-handler)))
+
+(create-engine :create-batch-response
+  (let [session (last input-message)
+        response (:response session)
+        prior-batches (:queued-batch-ids session)
+        batch-id (bulk-api/parse-and-extract response :id)]
+    (output-handler batch-id {:queued-batch-ids (conj prior-batches batch-id)})))
+
 (create-engine :close-job-request
   (let [[username session] input-message]
-    (bulk-api/request username session (str "job/" (:job-id session)) "close-job" {} output-handler)))
+    (bulk-api/request (str "job/" (:job-id session))
+                      username
+                      {:session session
+                       :template "close-job.xml"
+                       :data {}}
+                      output-handler)))
 
 (create-engine :close-job-response
   (let [response (:response (last input-message))

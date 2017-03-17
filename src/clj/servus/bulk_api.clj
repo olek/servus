@@ -42,13 +42,18 @@
               (map (partial xml-node-content xml) tags)))))
 
 (defn- generate-payload [template data]
-  (render-resource (str "templates/" template ".xml.mustache") data))
+  (render-resource (str "templates/" template ".mustache") data))
 
 (defn- compress-xml [body]
   (s/replace (with-out-str (xml/emit (parse-xml body))) #"[\n\r]" ""))
 
 (defn- do-request [username url body headers handler]
-  (let [compressed-body (compress-xml body)]
+  (let [content-type (or (headers "Content-Type")
+                         "text/xml; charset=UTF-8")
+        xml-content? (.startsWith content-type "text/xml")
+        compressed-body (if xml-content?
+                          (compress-xml body)
+                          body)]
     (info (str "Request [" username "]") url compressed-body headers)
     (http/post url
                {:body compressed-body
@@ -58,22 +63,21 @@
                                 headers)}
                handler)))
 
-(defn request [username
-               {:keys [session-id server-instance]}
-               path
-               template
-               data
-               handler]
-  (do-request username
-              (str "https://" server-instance service-prefix path)
-              (generate-payload template data)
-              {"X-SFDC-Session" session-id}
-              handler))
+(defn request [path username options handler]
+  (let [{{:keys [session-id server-instance]} :session
+         template :template
+         data :data} options]
+    (do-request username
+                (str "https://" server-instance service-prefix path)
+                (generate-payload template data)
+                {"X-SFDC-Session" session-id
+                 "Content-Type" (when (.endsWith template ".sql") "text/csv")}
+                handler)))
 
 (defn login-request [username password handler]
   (do-request username
               login-url
-              (generate-payload "login" {:username username
-                                         :password password})
+              (generate-payload "login.xml" {:username username
+                                             :password password})
               {"SOAPAction" "login"}
               handler))
