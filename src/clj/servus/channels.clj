@@ -18,18 +18,18 @@
                   :close-job-request-out (chan)
                   :close-job-response-in (chan)
                   :close-job-response-out (chan)
-                  :debug (chan)}
+                  :debug-in (chan)}
         route (fn [from to]
                 ;(pipe (get channels from) (get channels to) false))]
                 (let [m (mult (get channels from))]
                   (tap m (get channels to))
-                  (tap m (get channels :debug))))]
+                  (tap m (get channels :debug-in))))]
     (route :login-request-out :login-response-in)
     (route :login-response-out :create-job-request-in)
     (route :create-job-request-out :create-job-response-in)
     (route :create-job-response-out :close-job-request-in)
     (route :close-job-request-out :close-job-response-in)
-    (route :close-job-response-out :debug)
+    (route :close-job-response-out :debug-in)
     (info "Created channels")
     channels)
 

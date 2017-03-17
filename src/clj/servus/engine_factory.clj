@@ -1,10 +1,10 @@
-(ns servus.engine
+(ns servus.engine-factory
   (:require [clojure.tools.logging :refer [info warn]]
             [clojure.core.async :refer [<! >!! go-loop]]
             [mount.core :refer [defstate]]
             [servus.channels :refer [channels]]))
 
-(defmacro create [ref & code]
+(defmacro create-engine [ref & code]
   (let [input-channel (keyword (str (name ref) "-in"))
         output-channel (keyword (str (name ref) "-out"))
         engine-name (gensym (str "engine-" (name ref)))]
@@ -12,9 +12,13 @@
        :start
        (let [ch# (get channels ~input-channel)
              quit-atom# (atom false)
-             output-handler# (fn [[username# session#] output#]
-                              (>!! (get channels ~output-channel) [username# (merge session# output#)])
-                               output#)]
+             output-handler# (fn self#
+                               ([input-message# response#]
+                                (self# input-message# response# {}))
+                               ([[username# session#] response# session-overrides#]
+                                (>!! (get channels ~output-channel) [username# (merge session#
+                                                                                      session-overrides#
+                                                                                      {:response response#})])))]
          ;; TODO catch all errors in go-loop
          (go-loop [~'input-message :start]
            (condp = ~'input-message
