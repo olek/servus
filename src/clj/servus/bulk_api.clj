@@ -1,9 +1,11 @@
-(ns servus.bulk-api)
 (ns servus.bulk-api
   (:require [clojure.tools.logging :refer [info warn]]
             [org.httpkit.client :as http]
             [clostache.parser :refer [render-resource]]
-            [clojure.xml :as xml]))
+            [clojure.xml :as xml]
+            [clojure.core.async :refer [<! >!! go-loop]]
+            [mount.core :refer [defstate]]
+            [servus.channels :refer [channels]]))
 
 (def ^:private socket-timeout 3000) ; in ms
 (def ^:private keepalive 0) ; in ms
@@ -53,13 +55,13 @@
                data
                handler]
   (do-request (str "https://" server-instance service-prefix path)
-               (generate-payload template data)
-               {}
-               handler))
+              (generate-payload template data)
+              {"X-SFDC-Session" session-id}
+              handler))
 
 (defn login-request [username password handler]
   (do-request login-url
-               (generate-payload "login" {:username username
-                                          :password password})
-               {"SOAPAction" "login"}
-               handler))
+              (generate-payload "login" {:username username
+                                         :password password})
+              {"SOAPAction" "login"}
+              handler))

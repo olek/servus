@@ -1,1 +1,1 @@
-# Servus - prototyping of whatever data connect at its best
+# Servus - Salesforce data connector that uses Bulk API.
