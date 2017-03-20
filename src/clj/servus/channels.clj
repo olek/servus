@@ -1,53 +1,73 @@
 (ns servus.channels
-  (:require [clojure.core.async :refer [chan close! mult tap]]
+  (:require [clojure.core.async :refer [<! >! chan close! mult tap go-loop]]
             [clojure.tools.logging :refer [info warn]]
             [environ.core :refer [env]]
             [mount.core :refer [defstate]]))
 
 (defstate ^:private channels
   :start
-  (let [channels (atom {:login-request-in (chan)
-                        :login-request-out (chan)
-                        :login-response-in (chan)
-                        :login-response-out (chan)
-                        :create-job-request-in (chan)
-                        :create-job-request-out (chan)
-                        :create-job-response-in (chan)
-                        :create-job-response-out (chan)
-                        :create-batch-request-in (chan)
-                        :create-batch-request-out (chan)
-                        :create-batch-response-in (chan)
-                        :create-batch-response-out (chan)
-                        :close-job-request-in (chan)
-                        :close-job-request-out (chan)
-                        :close-job-response-in (chan)
-                        :close-job-response-out (chan)
-                        :debug-in (chan)})
-        route (fn [from to]
-                ;(pipe (get @channels from) (get @channels to) false))]
-                (let [m (mult (get @channels (keyword (str (name from) "-out"))))]
-                  (tap m (get @channels (keyword (str (name to) "-in"))))
-                  (tap m (get @channels :debug-in))))
-        routing-chain [:login-request
-                       :login-response
-                       :create-job-request
-                       :create-job-response
-                       :create-batch-request
-                       :create-batch-response
-                       :close-job-request
-                       :close-job-response
-                       :debug]]
-    (doseq [[from to] (zipmap routing-chain
-                                  (rest routing-chain))]
-      (route from to))
-    (info "Created channels")
-    channels)
+  (atom {:manifold (chan)})
 
   :stop
-  (do
-    (info "Closing channels")
-    (doseq [ch (vals @channels)]
-      (close! ch))))
+  (close! (:manifold @channels)))
 
-(defn channel-for [engine direction]
-  (get @channels (keyword (str (name engine) "-" (name direction)))))
+(defn create-channel! [engine]
+  (swap! channels
+         merge
+         {(keyword engine) (chan)}))
+
+(defn engine-channel [engine]
+  (get @channels (keyword engine)))
+
+(defn close-channel! [engine]
+  (close! (engine-channel engine))
+  (swap! channels
+         dissoc
+         (keyword engine)))
+
+(defn manifold-channel []
+  (@channels :manifold))
+
+(def ^:private routing-chain [:login-request
+                              :login-response
+                              :create-job-request
+                              :create-job-response
+                              :create-batch-request
+                              :create-batch-response
+                              :close-job-request
+                              :close-job-response
+                              :push-data])
+
+(defn- route [source]
+  (->> routing-chain
+       rest
+       (zipmap routing-chain)
+       source))
+
+(defstate ^:private manifold-engine
+  :start
+  (let [
+        ch (:manifold @channels)
+        quit-atom# (atom false)]
+    ;; TODO catch all errors in go-loop
+    (go-loop [input-message :start]
+      (condp = input-message
+        :start
+        (info "Waiting for requests in manifold...")
+
+        nil
+        (info "Not waiting for requests in manifold anymore, exiting")
+
+        (let [[source & message] input-message
+              target (route source)]
+          (when-not (= target :debug)
+            (>! (engine-channel :debug) message))
+          (>! (engine-channel target) message))
+        )
+      ;; TODO add timeout
+      (when (and (not @quit-atom#) input-message)
+        (recur  (<! ch))))
+    quit-atom#)
+
+  :stop
+  (reset! manifold-engine true))

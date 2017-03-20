@@ -64,6 +64,9 @@
         job-id (bulk-api/parse-and-extract response :id)]
     (output-handler job-id {:job-id nil})))
 
+(create-engine :push-data
+  (info (str "Make-believe push data [" (first input-message) "]")))
+
 (create-engine :debug
   (let [data (or (:response (last input-message))
                  input-message)

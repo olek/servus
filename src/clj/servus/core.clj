@@ -1,6 +1,6 @@
 (ns servus.core
   (:require [clojure.core.async :refer [>!!]]
-            [servus.channels :refer [channel-for]]))
+            [servus.channels :refer [engine-channel]]))
 
 (defn login [username password]
-  (>!! (channel-for :login-request :in) [username {:password password}]))
+  (>!! (engine-channel :login-request) [username {:password password}]))
