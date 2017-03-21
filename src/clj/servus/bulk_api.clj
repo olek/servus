@@ -6,7 +6,7 @@
             [mount.core :refer [defstate]]
             [clojure.string :as s]))
 
-(def ^:private socket-timeout 3000) ; in ms
+(def ^:private socket-timeout 7000) ; in ms
 (def ^:private keepalive 0) ; in ms
 (def ^:private login-url "https://login.salesforce.com/services/Soap/u/39.0")
 (def ^:private service-prefix "/services/async/39.0/")
@@ -40,7 +40,8 @@
               (map (partial xml-node-content xml) tags)))))
 
 (defn- generate-payload [template data]
-  (render-resource (str "templates/" template ".mustache") data))
+  (when (and template data)
+    (render-resource (str "templates/" template ".mustache") data)))
 
 (defn- compress-xml [body]
   (s/replace (with-out-str (xml/emit (parse-xml body))) #"[\n\r]" ""))
@@ -49,11 +50,13 @@
   (let [content-type (or (headers "Content-Type")
                          "text/xml; charset=UTF-8")
         xml-content? (.startsWith content-type "text/xml")
-        compressed-body (if xml-content?
+        compressed-body (if (and body
+                                 xml-content?)
                           (compress-xml body)
-                          body)]
+                          body)
+        http-fn (if body http/post http/get)]
     (info (str "Request [" username "]") url compressed-body headers)
-    (http/post url
+    (http-fn url
                {:body compressed-body
                 :timeout socket-timeout
                 :keepalive keepalive
@@ -69,7 +72,9 @@
                 (str "https://" server-instance service-prefix path)
                 (generate-payload template data)
                 {"X-SFDC-Session" session-id
-                 "Content-Type" (when (.endsWith template ".sql") "text/csv")}
+                 "Content-Type" (when (and template
+                                           (.endsWith template ".sql"))
+                                  "text/csv")}
                 handler)))
 
 (defn login-request [username password handler]

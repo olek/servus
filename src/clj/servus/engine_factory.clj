@@ -1,5 +1,5 @@
 (ns servus.engine-factory
-  (:require [clojure.tools.logging :refer [info warn]]
+  (:require [clojure.tools.logging :refer [info warn error]]
             [clojure.core.async :refer [<! >!! go-loop]]
             [mount.core :refer [defstate]]
             [servus.channels :refer [create-channel! close-channel! engine-channel manifold-channel]]))
@@ -27,8 +27,12 @@
              nil
              (info "Not waiting for requests to" ~ref "engine anymore, exiting")
 
-             (let [~'output-handler (partial output-handler# ~'input-message)]
-               ~@code))
+             (try
+               (let [~'output-handler (partial output-handler# ~'input-message)]
+                 ~@code)
+               (catch Exception e#
+                 (error "Caught exception:" (str e#))
+                 (output-handler# ~'input-message e#))))
            (when (and (not @quit-atom#) ~'input-message)
              (recur  (<! ch#))))
          quit-atom#)

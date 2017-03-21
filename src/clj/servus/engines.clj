@@ -1,5 +1,6 @@
 (ns servus.engines
-  (:require [clojure.tools.logging :refer [info]]
+  (:require [clojure.stacktrace :refer [print-cause-trace]]
+            [clojure.tools.logging :refer [info error]]
             [servus.bulk-api :as bulk-api]
             [servus.engine-factory :refer [create-engine]]))
 
@@ -50,6 +51,25 @@
         batch-id (bulk-api/parse-and-extract response :id)]
     (output-handler batch-id {:queued-batch-ids (conj prior-batches batch-id)})))
 
+(create-engine :check-batch-request
+  (let [[username session] input-message]
+    ;; TODO figure out way to handle more than one batch
+    (bulk-api/request (str "job/" (:job-id session) "/batch/" (first (:queued-batch-ids session)))
+                      username
+                      {:session session}
+                      output-handler)))
+
+(create-engine :check-batch-response
+  (let [session (last input-message)
+        response (:response session)
+        queued-batches (:queued-batch-ids session)
+        completed-batches (:completed-batch-ids session)
+        batch-state (bulk-api/parse-and-extract response :state)
+        batch-id (bulk-api/parse-and-extract response :id)]
+    (when (= "Completed" batch-state)
+      (output-handler batch-state {:queued-batch-ids (remove #{batch-id} queued-batches)
+                                :completed-batch-ids (conj queued-batches batch-id)}))))
+
 (create-engine :close-job-request
   (let [[username session] input-message]
     (bulk-api/request (str "job/" (:job-id session))
@@ -70,6 +90,17 @@
 (create-engine :debug
   (let [data (or (:response (last input-message))
                  input-message)
+
         data (or (:body data)
                  data)]
     (info (str "Response [" (first input-message) "]") (pr-str data))))
+
+(create-engine :error
+  (let [data (or (:response (last input-message))
+                 input-message)
+
+        data (if (isa? (class data) Exception)
+               (with-out-str (print-cause-trace data))
+               (pr-str data))]
+    ;; TODO exctact/output exceptionCode and exceptionMessage tags nicely if available in response xml
+    (error (str "Error [" (first input-message) "]") data)))

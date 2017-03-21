@@ -20,10 +20,11 @@
   (get @channels (keyword engine)))
 
 (defn close-channel! [engine]
-  (close! (engine-channel engine))
-  (swap! channels
-         dissoc
-         (keyword engine)))
+  (when-let [ch (engine-channel engine)]
+    (close! ch)
+    (swap! channels
+           dissoc
+           (keyword engine))))
 
 (defn manifold-channel []
   (@channels :manifold))
@@ -34,15 +35,17 @@
                               :create-job-response
                               :create-batch-request
                               :create-batch-response
+                              :check-batch-request
+                              :check-batch-response
                               :close-job-request
                               :close-job-response
                               :push-data])
 
 (defn- route [source]
-  (->> routing-chain
-       rest
-       (zipmap routing-chain)
-       source))
+  (let [chain-map (->> routing-chain
+                       rest
+                       (zipmap routing-chain))]
+    (chain-map source)))
 
 (defstate ^:private manifold-engine
   :start
@@ -59,7 +62,21 @@
         (info "Not waiting for requests in manifold anymore, exiting")
 
         (let [[source & message] input-message
-              target (route source)]
+              message (vec message)
+              target (route source)
+              response (:response (last message))
+              ;; skip parsing response if exception was raised while processing request
+              error? (or (isa? (class response) Exception)
+                         (and (:status response)
+                              (> (:status response) 299)))
+              target (if (and error?
+                              (.endsWith (name target) "-response"))
+                       (route target)
+                       target)
+              _ (when error?
+                  (>! (engine-channel :error) message))
+              message (update-in message [1 :response] #(if error? nil %))
+              ]
           (when-not (= target :debug)
             (>! (engine-channel :debug) message))
           (>! (engine-channel target) message))
