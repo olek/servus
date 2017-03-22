@@ -46,7 +46,7 @@
 (defn- compress-xml [body]
   (s/replace (with-out-str (xml/emit (parse-xml body))) #"[\n\r]" ""))
 
-(defn- do-request [username url body headers handler]
+(defn- do-request [engine username url body headers handler]
   (let [content-type (or (headers "Content-Type")
                          "text/xml; charset=UTF-8")
         xml-content? (.startsWith content-type "text/xml")
@@ -54,8 +54,8 @@
                                  xml-content?)
                           (compress-xml body)
                           body)
-        http-fn (if body http/post http/get)]
-    (info (str "Request [" username "]") url compressed-body headers)
+        [http-fn http-method] (if body [http/post "POST"] [http/get "GET"])]
+    (info (str "[" username "]") (name engine) "callout" "-" http-method url compressed-body headers)
     (http-fn url
                {:body compressed-body
                 :timeout socket-timeout
@@ -64,11 +64,12 @@
                                 headers)}
                handler)))
 
-(defn request [path username options handler]
+(defn request [engine path username options handler]
   (let [{{:keys [session-id server-instance]} :session
          template :template
          data :data} options]
-    (do-request username
+    (do-request engine
+                username
                 (str "https://" server-instance service-prefix path)
                 (generate-payload template data)
                 {"X-SFDC-Session" session-id
@@ -77,8 +78,9 @@
                                   "text/csv")}
                 handler)))
 
-(defn login-request [username password handler]
-  (do-request username
+(defn login-request [engine username password handler]
+  (do-request engine
+              username
               login-url
               (generate-payload "login.xml" {:username username
                                              :password password})

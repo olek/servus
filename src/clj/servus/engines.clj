@@ -6,7 +6,7 @@
 
 (create-engine :login-request
   (let [[username {:keys [password]}] input-message]
-    (bulk-api/login-request username password output-handler)))
+    (bulk-api/login-request :login-request username password output-handler)))
 
 (create-engine :login-response
   (let [response (:response (last input-message))
@@ -21,7 +21,8 @@
 
 (create-engine :create-job-request
   (let [[username session] input-message]
-    (bulk-api/request "job"
+    (bulk-api/request :create-job-request
+                      "job"
                       username
                       {:session session
                        :template "create-job.xml"
@@ -35,7 +36,8 @@
 
 (create-engine :create-batch-request
   (let [[username session] input-message]
-    (bulk-api/request (str "job/" (:job-id session) "/batch")
+    (bulk-api/request :create-batch-request
+                      (str "job/" (:job-id session) "/batch")
                       username
                       {:session session
                        :template "create-batch.sql"
@@ -54,7 +56,8 @@
 (create-engine :check-batch-request
   (let [[username session] input-message]
     ;; TODO figure out way to handle more than one batch
-    (bulk-api/request (str "job/" (:job-id session) "/batch/" (first (:queued-batch-ids session)))
+    (bulk-api/request :check-batch-request
+                      (str "job/" (:job-id session) "/batch/" (first (:queued-batch-ids session)))
                       username
                       {:session session}
                       output-handler)))
@@ -66,13 +69,15 @@
         completed-batches (:completed-batch-ids session)
         batch-state (bulk-api/parse-and-extract response :state)
         batch-id (bulk-api/parse-and-extract response :id)]
-    (when (= "Completed" batch-state)
+    (if (= "Completed" batch-state)
       (output-handler batch-state {:queued-batch-ids (remove #{batch-id} queued-batches)
-                                :completed-batch-ids (conj queued-batches batch-id)}))))
+                                :completed-batch-ids (conj queued-batches batch-id)})
+      (output-handler batch-state {}))))
 
 (create-engine :close-job-request
   (let [[username session] input-message]
-    (bulk-api/request (str "job/" (:job-id session))
+    (bulk-api/request :close-job-request
+                      (str "job/" (:job-id session))
                       username
                       {:session session
                        :template "close-job.xml"
@@ -85,22 +90,27 @@
     (output-handler job-id {:job-id nil})))
 
 (create-engine :push-data
-  (info (str "Make-believe push data [" (first input-message) "]")))
+  (let [[username session] input-message]
+    (info (str "[" username "]") "Make-believe pushing data to lala-land")))
 
 (create-engine :debug
-  (let [data (or (:response (last input-message))
+  (let [[username session] input-message
+        source (name (:engine session))
+        data (or (:response session)
                  input-message)
 
         data (or (:body data)
                  data)]
-    (info (str "Response [" (first input-message) "]") (pr-str data))))
+    (info (str "[" username "]") source "produced" (pr-str data))))
 
 (create-engine :error
-  (let [data (or (:response (last input-message))
-                 input-message)
+  (let [[username session] input-message
+        source (name (:engine session))
+        data (or (:response session)
+                 session)
 
         data (if (isa? (class data) Exception)
                (with-out-str (print-cause-trace data))
                (pr-str data))]
     ;; TODO exctact/output exceptionCode and exceptionMessage tags nicely if available in response xml
-    (error (str "Error [" (first input-message) "]") data)))
+    (error (str "[" username "]") source "caused error" data)))

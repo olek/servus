@@ -47,6 +47,9 @@
                        (zipmap routing-chain))]
     (chain-map source)))
 
+(defn- update-message [message field update-fn]
+  (update-in message [1 field] update-fn))
+
 (defstate ^:private manifold-engine
   :start
   (let [
@@ -74,11 +77,10 @@
                        (route target)
                        target)
               _ (when error?
-                  (>! (engine-channel :error) message))
-              message (update-in message [1 :response] #(if error? nil %))
+                  (>! (engine-channel :error) (update-message message :engine (constantly source))))
+              message (update-message message :response #(if error? nil %))
               ]
-          (when-not (= target :debug)
-            (>! (engine-channel :debug) message))
+          (>! (engine-channel :debug) (update-message message :engine (constantly source)))
           (>! (engine-channel target) message))
         )
       ;; TODO add timeout
