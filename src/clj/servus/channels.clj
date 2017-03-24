@@ -1,5 +1,5 @@
 (ns servus.channels
-  (:require [clojure.core.async :refer [<! >! chan close! mult tap go-loop]]
+  (:require [clojure.core.async :refer [<! >! >!! chan close! mult tap go-loop go timeout alts!]]
             [clojure.tools.logging :refer [info warn]]
             [environ.core :refer [env]]
             [mount.core :refer [defstate]]))
@@ -41,52 +41,81 @@
                               :close-job-response
                               :push-data])
 
-(defn- route [source]
+(defn- chain-route [source message]
   (let [chain-map (->> routing-chain
                        rest
                        (zipmap routing-chain))]
-    (chain-map source)))
+    [(chain-map source) message]))
 
 (defn- update-message [message field update-fn]
   (update-in message [1 field] update-fn))
 
-(defstate ^:private manifold-engine
-  :start
+(defn- special-route [source message]
+  (cond
+    (and (= source :check-batch-response)
+         (= "Queued" (get-in message [1 :response])))
+    (let [times-attempted (get-in message [1 :times-attempted] 1)]
+      (if (< times-attempted 3)
+        (do
+          (warn "Postponing " source "- attempted" times-attempted "times")
+          (go
+            (<! (timeout 5000))
+            (warn "Retrying " source "- attempted" times-attempted "times")
+            ;; TODO pushing in previous engine is super-ugly, fix it
+            (>! (manifold-channel) [:create-batch-response (update-message message :times-attempted (fnil inc 1))]))
+          [:finish message])
+        (do (warn "Aborting retries of" source "after" times-attempted "attempts")
+          [:close-job-request [(first message) (dissoc (last message) :times-attempted)]])))
+
+    :else nil))
+
+(defn- route [source message]
+  (or (special-route source message)
+      (chain-route source message)))
+
+(defn- start-manifold-engine []
   (let [
         ch (:manifold @channels)
-        quit-atom# (atom false)]
+        stop-channel (chan)]
     ;; TODO catch all errors in go-loop
     (go-loop [input-message :start]
       (condp = input-message
         :start
         (info "Waiting for requests in manifold...")
 
-        nil
+        :stop-engine
         (info "Not waiting for requests in manifold anymore, exiting")
 
-        (let [[source & message] input-message
-              message (vec message)
-              target (route source)
+        nil
+        (info "Duh, manifold processing done")
+
+        (let [[source message] input-message
+              [target message] (route source message)
               response (:response (last message))
               ;; skip parsing response if exception was raised while processing request
               error? (or (isa? (class response) Exception)
                          (and (:status response)
                               (> (:status response) 299)))
-              target (if (and error?
-                              (.endsWith (name target) "-response"))
-                       (route target)
-                       target)
+              [target message] (if (and error?
+                                        (.endsWith (name target) "-response"))
+                                 (route target message)
+                                 [target message])
               _ (when error?
                   (>! (engine-channel :error) (update-message message :engine (constantly source))))
               message (update-message message :response #(if error? nil %))
               ]
           (>! (engine-channel :debug) (update-message message :engine (constantly source)))
-          (>! (engine-channel target) message))
+          (when-not (= :finish target)
+            (>! (engine-channel target) message)))
         )
-      ;; TODO add timeout
-      (when (and (not @quit-atom#) input-message)
-        (recur  (<! ch))))
-    quit-atom#)
+      (when (and input-message
+                 (not= :stop-engine input-message))
+        (recur  (first (alts!  [stop-channel ch] :priority true)))))
+    stop-channel))
+
+(defstate ^:private manifold-engine
+  :start
+  (start-manifold-engine)
 
   :stop
-  (reset! manifold-engine true))
+  (>!! manifold-engine :stop-engine))
