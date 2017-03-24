@@ -1,6 +1,7 @@
 (ns servus.channels
   (:require [clojure.core.async :refer [<! >! >!! chan close! mult tap go-loop go timeout alts!]]
-            [clojure.tools.logging :refer [info warn]]
+            [clojure.stacktrace :refer [print-cause-trace]]
+            [clojure.tools.logging :refer [info warn error]]
             [environ.core :refer [env]]
             [mount.core :refer [defstate]]))
 
@@ -30,17 +31,12 @@
   (@channels :manifold))
 
 (def ^:private routing-chain [:login-request
-                              :login-response
                               :create-job-request
-                              :create-job-response
                               :create-batch-request
-                              :create-batch-response
                               :check-batch-request
-                              :check-batch-response
                               :close-job-request
-                              :close-job-response
                               :drain-request
-                              :drain-response])
+                              :finish])
 
 (defn- chain-route [source message]
   (let [chain-map (->> routing-chain
@@ -53,7 +49,7 @@
 
 (defn- special-route [source message]
   (cond
-    (and (= source :check-batch-response)
+    (and (= source :check-batch-process)
          (= "Queued" (get-in message [1 :response])))
     (let [times-attempted (get-in message [1 :times-attempted] 1)]
       (if (< times-attempted 3)
@@ -63,7 +59,7 @@
             (<! (timeout 5000))
             (warn "Retrying " source "- attempted" times-attempted "times")
             ;; TODO pushing in previous engine is super-ugly, fix it
-            (>! (manifold-channel) [:create-batch-response (update-message message :times-attempted (fnil inc 1))]))
+            (>! (manifold-channel) [:create-batch-process (update-message message :times-attempted (fnil inc 1))]))
           [:finish message])
         (do (warn "Aborting retries of" source "after" times-attempted "attempts")
           [:close-job-request [(first message) (dissoc (last message) :times-attempted)]])))
@@ -80,35 +76,37 @@
         stop-channel (chan)]
     ;; TODO catch all errors in go-loop
     (go-loop [input-message :start]
-      (condp = input-message
-        :start
-        (info "Waiting for requests in manifold...")
+      (try
+        (condp = input-message
+          :start
+          (info "Waiting for requests in manifold...")
 
-        :stop-engine
-        (info "Not waiting for requests in manifold anymore, exiting")
+          :stop-engine
+          (info "Not waiting for requests in manifold anymore, exiting")
 
-        nil
-        (info "Duh, manifold processing done")
+          nil
+          (info "Duh, manifold processing done")
 
-        (let [[source message] input-message
-              [target message] (route source message)
-              response (:response (last message))
-              ;; skip parsing response if exception was raised while processing request
-              error? (or (isa? (class response) Exception)
-                         (and (:status response)
-                              (> (:status response) 299)))
-              [target message] (if (and error?
-                                        (.endsWith (name target) "-response"))
-                                 (route target message)
-                                 [target message])
-              _ (when error?
-                  (>! (engine-channel :error) (update-message message :engine (constantly source))))
-              message (update-message message :response #(if error? nil %))
-              ]
-          (>! (engine-channel :trace) (update-message message :engine (constantly source)))
-          (when-not (= :finish target)
-            (>! (engine-channel target) message)))
-        )
+          (let [[source message] input-message
+                [target message] (route source message)
+                response (:response (last message))
+                ;; skip parsing response if exception was raised while processing request
+                error? (or (isa? (class response) Exception)
+                           (and (:status response)
+                                (> (:status response) 299)))
+                [target message] (if (and error?
+                                          (.endsWith (name target) "-response"))
+                                   (route (route target message)) ; skip -response and -process
+                                   [target message])
+                _ (when error?
+                    (>! (engine-channel :error) (update-message message :engine (constantly source))))
+                message (update-message message :response #(if error? nil %))
+                ]
+            (>! (engine-channel :trace) (update-message message :engine (constantly source)))
+            (when-not (= :finish target)
+              (>! (engine-channel target) message))))
+        (catch Exception e
+          (error "Caught exception in manifold loop:" (with-out-str (print-cause-trace e)))))
       (when (and input-message
                  (not= :stop-engine input-message))
         (recur  (first (alts!  [stop-channel ch] :priority true)))))

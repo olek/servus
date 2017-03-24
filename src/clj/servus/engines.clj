@@ -13,9 +13,11 @@
                session-id (:sessionId data)
                server-instance (-> #"\w+.salesforce.com"
                                    (re-find (:serverUrl data)))]
-           (output-handler [session-id server-instance]
-                           {:session-id session-id
-                            :server-instance server-instance})))
+           (output-handler [session-id server-instance]))
+  :process (let [response (:response (last input-message))]
+             ;; TODO processing goes here
+             (output-handler {:session-id (first response)
+                              :server-instance (last response)})))
 
 (create-callout-engine :create-job
   :send (let [[username session] input-message]
@@ -29,7 +31,10 @@
 
   :parse (let [response (:response (last input-message))
                job-id (bulk-api/parse-and-extract response :id)]
-           (output-handler job-id {:job-id job-id})))
+           (output-handler job-id))
+  :process (let [response (:response (last input-message))]
+             ;; TODO processing goes here
+             (output-handler {:job-id response})))
 
 (create-callout-engine :create-batch
   :send (let [[username session] input-message]
@@ -45,9 +50,14 @@
 
   :parse (let [session (last input-message)
                response (:response session)
-               prior-batches (:queued-batch-ids session)
                batch-id (bulk-api/parse-and-extract response :id)]
-           (output-handler batch-id {:queued-batch-ids (conj prior-batches batch-id)})))
+           (output-handler batch-id))
+
+  :process (let [session (last input-message)
+                 response (:response session)
+                 prior-batches (:queued-batch-ids session)]
+             ;; TODO processing goes here
+             (output-handler {:queued-batch-ids (conj prior-batches response)})))
 
 (create-callout-engine :check-batch
   :send (let [[username session] input-message]
@@ -60,14 +70,19 @@
 
   :parse (let [session (last input-message)
                response (:response session)
-               queued-batches (:queued-batch-ids session)
-               completed-batches (:completed-batch-ids session)
                batch-state (bulk-api/parse-and-extract response :state)
                batch-id (bulk-api/parse-and-extract response :id)]
-           (if (= "Completed" batch-state)
-             (output-handler batch-state {:queued-batch-ids (remove #{batch-id} queued-batches)
-                                          :completed-batch-ids (conj queued-batches batch-id)})
-             (output-handler batch-state {}))))
+           (output-handler [batch-id batch-state]))
+
+  :process (let [session (last input-message)
+                 [batch-id batch-state] (:response session)
+                 queued-batches (:queued-batch-ids session)
+                 completed-batches (:completed-batch-ids session)]
+             ;; TODO processing goes here
+             (if (= "Completed" batch-state)
+               (output-handler {:queued-batch-ids (remove #{batch-id} queued-batches)
+                                :completed-batch-ids (conj queued-batches batch-id)})
+               (output-handler nil))))
 
 (create-callout-engine :close-job
   :send (let [[username session] input-message]
@@ -81,14 +96,25 @@
 
   :parse (let [response (:response (last input-message))
                job-id (bulk-api/parse-and-extract response :id)]
-           (output-handler job-id {:job-id nil})))
+           (output-handler job-id ))
+  :process (let [response (:response (last input-message))]
+             ;; TODO processing goes here
+             (output-handler {:job-id nil})))
 
 (create-callout-engine :drain
   :send (let [[username session] input-message]
           (info (str "[" username "]") "drain-request make-believe draining collected data to lala-land")
-          (output-handler "NOOP" {}))
+          (output-handler "NOOP"))
   :parse (let [[username session] input-message]
-           (info (str "[" username "]") "drain-response make-believe parsing of the reply from lala-land")))
+           (info (str "[" username "]") "drain-response make-believe parsing of the reply from lala-land")
+           (output-handler "NOOP"))
+  :process (let [response (:response (last input-message))]
+             ;; TODO processing goes here
+             (output-handler nil)))
+
+(create-terminal-engine :finish
+  (let [[username session] input-message]
+    (info (str "[" username "]") "all processing finished")))
 
 (create-terminal-engine :trace
   (let [[username session] input-message
