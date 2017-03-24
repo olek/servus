@@ -41,7 +41,7 @@
   (>!! ch :stop-engine)
   (close-channel! handle))
 
-(defmacro create-engine [handle & code]
+(defmacro create-terminal-engine [handle & code]
   (let [engine-name (gensym (str "engine-" (name handle)))]
     `(defstate ^:private ~engine-name
        :start
@@ -50,13 +50,25 @@
        :stop
        (stop-engine ~handle ~engine-name))))
 
-;(defn create-super-engine [handle opts]
-;  (let [send-fn (:send opts)
-;        parse-fn (:parse opts)
-;        process-fn (:process opts)
-;        send-handle (keyword (str (name handle) "-request"))
-;        parse-fn (keyword (str (name handle) "-response"))
-;        process-fn (keyword (str (name handle) "-process"))
-;        ]
-;    (create-engine send-handle))
-;  )
+(use '[clojure.tools.logging :only (spy)])
+
+(defmacro create-callout-engine [handle & options]
+  (let [code (apply hash-map options)
+        handle-str (name handle)
+        send-handle (keyword (str handle-str "-request"))
+        parse-handle (keyword (str handle-str "-response"))
+        send-engine-name (gensym (str "engine-" handle-str))
+        parse-engine-name (gensym (str "engine-" handle-str))]
+    `(do
+       (defstate ^:private ~send-engine-name
+         :start
+         (start-engine ~send-handle (fn [~'input-message ~'output-handler] ~(:send code)))
+
+         :stop
+         (stop-engine ~send-handle ~send-engine-name))
+       (defstate ^:private ~parse-engine-name
+         :start
+         (start-engine ~parse-handle (fn [~'input-message ~'output-handler] ~(:parse code)))
+
+         :stop
+         (stop-engine ~parse-handle ~parse-engine-name)))))

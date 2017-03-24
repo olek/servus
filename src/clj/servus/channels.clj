@@ -39,7 +39,8 @@
                               :check-batch-response
                               :close-job-request
                               :close-job-response
-                              :push-data])
+                              :drain-request
+                              :drain-response])
 
 (defn- chain-route [source message]
   (let [chain-map (->> routing-chain
@@ -104,7 +105,7 @@
                   (>! (engine-channel :error) (update-message message :engine (constantly source))))
               message (update-message message :response #(if error? nil %))
               ]
-          (>! (engine-channel :debug) (update-message message :engine (constantly source)))
+          (>! (engine-channel :trace) (update-message message :engine (constantly source)))
           (when-not (= :finish target)
             (>! (engine-channel target) message)))
         )
