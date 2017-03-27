@@ -1,23 +1,24 @@
 (ns servus.engine-factory
   (:require [clojure.tools.logging :refer [info warn error]]
-            [clojure.core.async :refer [>! <! >!! go-loop chan alts!]]
+            [clojure.core.async :refer [>! <! >!! go-loop chan alts! close!]]
             [mount.core :refer [defstate]]
             [servus.channels :refer [create-channel! close-channel! engine-channel manifold-channel]]))
 
 (defn- distribute [engine message]
   (>!! (engine-channel engine) message))
 
-(defn start-engine [handle engine-fn]
-  (let [_ (create-channel! handle)
-        ch (engine-channel handle)
+(defn start-engine [handle ch engine-fn]
+  (let [ch (if (keyword? ch)
+             (create-channel! ch)
+             ch)
         stop-channel (chan)
         output-handler (fn self
-                          ([input-message response]
-                           (self input-message response {}))
-                          ([[username session] response session-overrides]
-                           (>!! (manifold-channel) [handle [username (merge session
-                                                                              session-overrides
-                                                                              {:response response})]])))]
+                         ([input-message response]
+                          (self input-message response {}))
+                         ([[username session] response session-overrides]
+                          (>!! (manifold-channel) [handle [username (merge session
+                                                                           session-overrides
+                                                                           {:response response})]])))]
     ;; TODO catch all errors in go-loop
     (go-loop [input-message :start]
       (condp = input-message
@@ -40,22 +41,28 @@
         (recur (first (alts! [stop-channel ch] :priority true)))))
     stop-channel))
 
-(defn stop-engine [handle ch]
-  (>!! ch :stop-engine)
-  (close-channel! handle))
+(defn stop-engine
+  ([handle control-ch]
+   (>!! control-ch :stop-engine))
+  ([handle control-ch input-ch]
+   (stop-engine handle control-ch)
+   (close-channel! input-ch)))
 
 (defmacro create-terminal-engine [handle & code]
   (let [engine-name (gensym (str "engine-" (name handle)))]
     `(defstate ^:private ~engine-name
        :start
-       (start-engine ~handle (fn [~'input-message] ~@code))
+       (start-engine ~handle
+                     ~handle
+                     (fn [~'input-message] ~@code))
 
        :stop
-       (stop-engine ~handle ~engine-name))))
+       (stop-engine ~handle ~engine-name ~handle))))
 
 (defmacro create-callout-engine [handle & options]
   (let [code (apply hash-map options)
         handle-str (name handle)
+        engine-channels-name (gensym (str "engine-" handle-str "-channels"))
         send-handle (keyword (str handle-str "-request"))
         parse-handle (keyword (str handle-str "-response"))
         process-handle (keyword (str handle-str "-process"))
@@ -63,26 +70,37 @@
         parse-engine-name (gensym (str "engine-" handle-str "-response"))
         process-engine-name (gensym (str "engine-" handle-str "-process"))]
     `(do
+       (defstate ^:private ~engine-channels-name
+         :start
+         {:raw-response (chan)
+          :parsed-response (chan)}
+
+         :stop
+         (doseq [ch# (vals ~engine-channels-name)]
+           (close! ch#)))
+
        (defstate ^:private ~send-engine-name
          :start
          (start-engine ~send-handle
+                       ~handle
                        (fn [~'input-message]
                          (let [~'output-handler (fn [response#]
                                                   (info (str "[" (first ~'input-message) "]") (name ~send-handle) "returned" (pr-str (:body response#)))
-                                                  (>!! (engine-channel ~parse-handle)
+                                                  (>!! (~engine-channels-name :raw-response)
                                                        (update-in ~'input-message [1 :response] (constantly response#))))]
                            ~(:send code))))
 
          :stop
-         (stop-engine ~send-handle ~send-engine-name))
+         (stop-engine ~send-handle ~send-engine-name ~handle))
 
        (defstate ^:private ~parse-engine-name
          :start
          (start-engine ~parse-handle
+                       (~engine-channels-name :raw-response)
                        (fn [~'input-message]
                          (let [~'output-handler (fn [response#]
                                                   (info (str "[" (first ~'input-message) "]") (name ~parse-handle) "returned" (pr-str response#))
-                                                  (>!! (engine-channel ~process-handle)
+                                                  (>!! (~engine-channels-name :parsed-response)
                                                        (update-in ~'input-message [1 :response] (constantly response#))))]
                            ~(:parse code))))
 
@@ -92,11 +110,12 @@
        (defstate ^:private ~process-engine-name
          :start
          (start-engine ~process-handle
+                       (~engine-channels-name :parsed-response)
                        (fn [~'input-message]
                          (let [~'output-handler (fn [response#]
                                                   (info (str "[" (first ~'input-message) "]") (name ~process-handle) "returned" (pr-str response#))
-                                                  (>!! (manifold-channel) [~process-handle (update-in ~'input-message [1] (comp (partial merge response#)
-                                                                                                                                #(dissoc % :response)))]))]
+                                                  (>!! (manifold-channel) [~handle (update-in ~'input-message [1] (comp (partial merge response#)
+                                                                                                                        #(dissoc % :response)))]))]
                            ~(:process code))))
 
          :stop

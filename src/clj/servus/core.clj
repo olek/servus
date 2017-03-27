@@ -3,4 +3,4 @@
             [servus.channels :refer [engine-channel]]))
 
 (defn login [username password]
-  (>!! (engine-channel :login-request) [username {:password password}]))
+  (>!! (engine-channel :login) [username {:password password}]))

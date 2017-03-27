@@ -13,12 +13,16 @@
   (close! (:manifold @channels)))
 
 (defn create-channel! [engine]
-  (swap! channels
-         merge
-         {(keyword engine) (chan)}))
+  (let [ch (chan)]
+    (swap! channels
+           merge
+           {(keyword engine) ch})
+    ch))
 
 (defn engine-channel [engine]
-  (get @channels (keyword engine)))
+  (or
+    (get @channels (keyword engine))
+    (throw (ex-info (str "No channel for engine " (pr-str engine)) {}))))
 
 (defn close-channel! [engine]
   (when-let [ch (engine-channel engine)]
@@ -30,12 +34,12 @@
 (defn manifold-channel []
   (@channels :manifold))
 
-(def ^:private routing-chain [:login-request
-                              :create-job-request
-                              :create-batch-request
-                              :check-batch-request
-                              :close-job-request
-                              :drain-request
+(def ^:private routing-chain [:login
+                              :create-job
+                              :create-batch
+                              :check-batch
+                              :close-job
+                              :drain
                               :finish])
 
 (defn- chain-route [source message]
@@ -100,8 +104,7 @@
                                    [target message])
                 _ (when error?
                     (>! (engine-channel :error) (update-message message :engine (constantly source))))
-                message (update-message message :response #(if error? nil %))
-                ]
+                message (update-message message :response #(if error? nil %))]
             (>! (engine-channel :trace) (update-message message :engine (constantly source)))
             (when-not (= :finish target)
               (>! (engine-channel target) message))))
