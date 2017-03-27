@@ -16,7 +16,8 @@
            (output-handler [session-id server-instance]))
   :process (let [response (:response (last input-message))]
              ;; TODO processing goes here
-             (output-handler {:session-id (first response)
+             (output-handler :create-job
+                             {:session-id (first response)
                               :server-instance (last response)})))
 
 (create-callout-engine :create-job
@@ -34,7 +35,8 @@
            (output-handler job-id))
   :process (let [response (:response (last input-message))]
              ;; TODO processing goes here
-             (output-handler {:job-id response})))
+             (output-handler :create-batch
+                             {:job-id response})))
 
 (create-callout-engine :create-batch
   :send (let [[username session] input-message]
@@ -57,7 +59,8 @@
                  response (:response session)
                  prior-batches (:queued-batch-ids session)]
              ;; TODO processing goes here
-             (output-handler {:queued-batch-ids (conj prior-batches response)})))
+             (output-handler :check-batch
+                             {:queued-batch-ids (conj prior-batches response)})))
 
 (create-callout-engine :check-batch
   :send (let [[username session] input-message]
@@ -80,9 +83,9 @@
                  completed-batches (:completed-batch-ids session)]
              ;; TODO processing goes here
              (if (= "Completed" batch-state)
-               (output-handler {:queued-batch-ids (remove #{batch-id} queued-batches)
+               (output-handler :close-job {:queued-batch-ids (remove #{batch-id} queued-batches)
                                 :completed-batch-ids (conj queued-batches batch-id)})
-               (output-handler nil))))
+               (output-handler :close-job nil))))
 
 (create-callout-engine :close-job
   :send (let [[username session] input-message]
@@ -99,7 +102,8 @@
            (output-handler job-id ))
   :process (let [response (:response (last input-message))]
              ;; TODO processing goes here
-             (output-handler {:job-id nil})))
+             (output-handler :drain
+                             {:job-id nil})))
 
 (create-callout-engine :drain
   :send (let [[username session] input-message]
@@ -110,7 +114,7 @@
            (output-handler "NOOP"))
   :process (let [response (:response (last input-message))]
              ;; TODO processing goes here
-             (output-handler nil)))
+             (output-handler :finish nil)))
 
 (create-terminal-engine :finish
   (let [[username session] input-message]

@@ -2,7 +2,7 @@
   (:require [clojure.tools.logging :refer [info warn error]]
             [clojure.core.async :refer [>! <! >!! go-loop chan alts! close!]]
             [mount.core :refer [defstate]]
-            [servus.channels :refer [create-channel! close-channel! engine-channel manifold-channel]]))
+            [servus.channels :refer [create-channel! close-channel! engine-channel]]))
 
 (defn- distribute [engine message]
   (>!! (engine-channel engine) message))
@@ -12,13 +12,14 @@
              local-ch
              (create-channel! ch))
         stop-channel (chan)
-        output-handler (fn self
-                         ([input-message response]
-                          (self input-message response {}))
-                         ([[username session] response session-overrides]
-                          (>!! (manifold-channel) [handle [username (merge session
-                                                                           session-overrides
-                                                                           {:response response})]])))]
+        ;output-handler (fn self
+        ;                 ([input-message response]
+        ;                  (self input-message response {}))
+        ;                 ([[username session] response session-overrides]
+        ;                  (>!! (manifold-channel) [handle [username (merge session
+        ;                                                                   session-overrides
+        ;                                                                   {:response response})]])))
+        ]
     ;; TODO catch all errors in go-loop
     (go-loop [input-message :start]
       (condp = input-message
@@ -35,7 +36,8 @@
           (engine-fn input-message)
           (catch Exception e
             (error (str "Caught exception in " (name handle) ":") (str e))
-            (output-handler input-message e))))
+            ;; TODO figure out what to do next in case of an error
+            )))
       (when (and input-message
                  (not= :stop-engine input-message))
         (recur (first (alts! [stop-channel ch] :priority true)))))
@@ -70,21 +72,22 @@
                         (engine-fn input-message output-handler))))))
 
 (defn start-process-endpoint-engine [handle process-handle local-channels engine-fn]
-    (start-engine process-handle
-                  local-channels
-                  :parsed-response
-                  (fn [input-message]
-                    (let [output-handler (fn [response]
-                                           (info (str "[" (first input-message) "]") (name process-handle) "returned" (pr-str response))
-                                           (>!! (manifold-channel) [handle (update-in input-message [1] (comp (partial merge response)
-                                                                                                              #(dissoc % :response)))]))
-                          response (:response (last input-message))
-                          error? (or (isa? (class response) Exception)
-                                     (and (:status response)
-                                          (> (:status response) 299)))]
-                      (if error?
-                        (>!! (manifold-channel) [handle input-message])
-                        (engine-fn input-message output-handler))))))
+  (start-engine process-handle
+                local-channels
+                :parsed-response
+                (fn [input-message]
+                  (let [output-handler (fn [target response]
+                                         (info (str "[" (first input-message) "]") (name process-handle) "returned" (pr-str response))
+                                         (>!! (engine-channel target) (update-in input-message [1] (comp (partial merge response)
+                                                                                                         #(dissoc % :response)))))
+                        response (:response (last input-message))
+                        error? (or (isa? (class response) Exception)
+                                   (and (:status response)
+                                        (> (:status response) 299)))]
+                    ;; TODO figure out why error handling is currently broken
+                    (when error?
+                      (>! (engine-channel :error) (update-in input-message [1 :engine] (constantly handle))))
+                    (engine-fn input-message output-handler)))))
 
 (defn stop-engine
   ([handle control-ch]
@@ -151,6 +154,7 @@
                                         ~process-handle
                                         ~engine-channels-name
                                         (fn [~'input-message ~'output-handler]
-                                          ~(:process code)))
+                                          (let [~'channels engine-channel]
+                                            ~(:process code))))
          :stop
          (stop-engine ~process-handle ~process-engine-name)))))
