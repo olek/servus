@@ -15,10 +15,10 @@
                                    (re-find (:serverUrl data)))]
            (output-handler [session-id server-instance]))
   :process (let [response (:response (last input-message))]
-             ;; TODO processing goes here
              (output-handler :create-job
                              {:session-id (first response)
-                              :server-instance (last response)})))
+                              :server-instance (last response)}))
+  :error (output-handler :finish))
 
 (create-callout-engine :create-job
   :send (let [[username session] input-message]
@@ -34,9 +34,9 @@
                job-id (bulk-api/parse-and-extract response :id)]
            (output-handler job-id))
   :process (let [response (:response (last input-message))]
-             ;; TODO processing goes here
              (output-handler :create-batch
-                             {:job-id response})))
+                             {:job-id response}))
+  :error (output-handler :finish))
 
 (create-callout-engine :create-batch
   :send (let [[username session] input-message]
@@ -58,9 +58,9 @@
   :process (let [session (last input-message)
                  response (:response session)
                  prior-batches (:queued-batch-ids session)]
-             ;; TODO processing goes here
              (output-handler :check-batch
-                             {:queued-batch-ids (conj prior-batches response)})))
+                             {:queued-batch-ids (conj prior-batches response)}))
+  :error (output-handler :close-job))
 
 (create-callout-engine :check-batch
   :send (let [[username session] input-message]
@@ -81,11 +81,11 @@
                  [batch-id batch-state] (:response session)
                  queued-batches (:queued-batch-ids session)
                  completed-batches (:completed-batch-ids session)]
-             ;; TODO processing goes here
              (if (= "Completed" batch-state)
                (output-handler :close-job {:queued-batch-ids (remove #{batch-id} queued-batches)
                                 :completed-batch-ids (conj queued-batches batch-id)})
-               (output-handler :close-job nil))))
+               (output-handler :close-job nil)))
+  :error (output-handler :close-job))
 
 (create-callout-engine :close-job
   :send (let [[username session] input-message]
@@ -101,9 +101,9 @@
                job-id (bulk-api/parse-and-extract response :id)]
            (output-handler job-id ))
   :process (let [response (:response (last input-message))]
-             ;; TODO processing goes here
              (output-handler :drain
-                             {:job-id nil})))
+                             {:job-id nil}))
+  :error (output-handler :finish))
 
 (create-callout-engine :drain
   :send (let [[username session] input-message]
@@ -113,8 +113,8 @@
            (info (str "[" username "]") "drain-response make-believe parsing of the reply from lala-land")
            (output-handler "NOOP"))
   :process (let [response (:response (last input-message))]
-             ;; TODO processing goes here
-             (output-handler :finish nil)))
+             (output-handler :finish nil))
+  :error (output-handler :finish))
 
 (create-terminal-engine :finish
   (let [[username session] input-message]
@@ -136,8 +136,8 @@
         data (or (:response session)
                  session)
 
-        data (if (isa? (class data) Exception)
-               (with-out-str (print-cause-trace data))
-               (pr-str data))]
+        text (if (isa? (class data) Exception)
+               (str "caused error " (with-out-str (print-cause-trace data)))
+               (str "detected error " (pr-str data)))]
     ;; TODO exctact/output exceptionCode and exceptionMessage tags nicely if available in response xml
-    (error (str "[" username "]") source "caused error" data)))
+    (error (str "[" username "]") source text)))
