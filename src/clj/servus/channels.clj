@@ -98,10 +98,6 @@
                 error? (or (isa? (class response) Exception)
                            (and (:status response)
                                 (> (:status response) 299)))
-                [target message] (if (and error?
-                                          (.endsWith (name target) "-response"))
-                                   (route (route target message)) ; skip -response and -process
-                                   [target message])
                 _ (when error?
                     (>! (engine-channel :error) (update-message message :engine (constantly source))))
                 message (update-message message :response #(if error? nil %))]

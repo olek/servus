@@ -7,10 +7,10 @@
 (defn- distribute [engine message]
   (>!! (engine-channel engine) message))
 
-(defn start-engine [handle ch engine-fn]
-  (let [ch (if (keyword? ch)
-             (create-channel! ch)
-             ch)
+(defn start-engine [handle local-channels ch engine-fn]
+  (let [ch (if-let [local-ch (get local-channels ch)]
+             local-ch
+             (create-channel! ch))
         stop-channel (chan)
         output-handler (fn self
                          ([input-message response]
@@ -41,6 +41,51 @@
         (recur (first (alts! [stop-channel ch] :priority true)))))
     stop-channel))
 
+(defn start-send-endpoint-engine [handle send-handle local-channels engine-fn]
+    (start-engine send-handle
+                  local-channels
+                  handle
+                  (fn [input-message]
+                    (let [output-handler (fn [response]
+                                           (info (str "[" (first input-message) "]") (name send-handle) "returned" (pr-str (:body response)))
+                                           (>!! (local-channels :raw-response)
+                                                (update-in input-message [1 :response] (constantly response))))]
+                      (engine-fn input-message output-handler)))))
+
+(defn start-parse-endpoint-engine [handle parse-handle local-channels engine-fn]
+    (start-engine parse-handle
+                  local-channels
+                  :raw-response
+                  (fn [input-message]
+                    (let [output-handler (fn [response]
+                                             (info (str "[" (first input-message) "]") (name parse-handle) "returned" (pr-str response))
+                                             (>!! (local-channels :parsed-response)
+                                                  (update-in input-message [1 :response] (constantly response))))
+                          response (:response (last input-message))
+                          error? (or (isa? (class response) Exception)
+                                      (and (:status response)
+                                           (> (:status response) 299)))]
+                      (if error?
+                        (>!! (local-channels :parsed-response) input-message)
+                        (engine-fn input-message output-handler))))))
+
+(defn start-process-endpoint-engine [handle process-handle local-channels engine-fn]
+    (start-engine process-handle
+                  local-channels
+                  :parsed-response
+                  (fn [input-message]
+                    (let [output-handler (fn [response]
+                                           (info (str "[" (first input-message) "]") (name process-handle) "returned" (pr-str response))
+                                           (>!! (manifold-channel) [handle (update-in input-message [1] (comp (partial merge response)
+                                                                                                              #(dissoc % :response)))]))
+                          response (:response (last input-message))
+                          error? (or (isa? (class response) Exception)
+                                     (and (:status response)
+                                          (> (:status response) 299)))]
+                      (if error?
+                        (>!! (manifold-channel) [handle input-message])
+                        (engine-fn input-message output-handler))))))
+
 (defn stop-engine
   ([handle control-ch]
    (>!! control-ch :stop-engine))
@@ -53,6 +98,7 @@
     `(defstate ^:private ~engine-name
        :start
        (start-engine ~handle
+                     nil
                      ~handle
                      (fn [~'input-message] ~@code))
 
@@ -63,11 +109,11 @@
   (let [code (apply hash-map options)
         handle-str (name handle)
         engine-channels-name (gensym (str "engine-" handle-str "-channels"))
-        send-handle (keyword (str handle-str "-request"))
-        parse-handle (keyword (str handle-str "-response"))
+        send-handle (keyword (str handle-str "-send"))
+        parse-handle (keyword (str handle-str "-parse"))
         process-handle (keyword (str handle-str "-process"))
-        send-engine-name (gensym (str "engine-" handle-str "-request"))
-        parse-engine-name (gensym (str "engine-" handle-str "-response"))
+        send-engine-name (gensym (str "engine-" handle-str "-send"))
+        parse-engine-name (gensym (str "engine-" handle-str "-parse"))
         process-engine-name (gensym (str "engine-" handle-str "-process"))]
     `(do
        (defstate ^:private ~engine-channels-name
@@ -81,42 +127,30 @@
 
        (defstate ^:private ~send-engine-name
          :start
-         (start-engine ~send-handle
-                       ~handle
-                       (fn [~'input-message]
-                         (let [~'output-handler (fn [response#]
-                                                  (info (str "[" (first ~'input-message) "]") (name ~send-handle) "returned" (pr-str (:body response#)))
-                                                  (>!! (~engine-channels-name :raw-response)
-                                                       (update-in ~'input-message [1 :response] (constantly response#))))]
-                           ~(:send code))))
-
+         (start-send-endpoint-engine ~handle
+                                     ~send-handle
+                                     ~engine-channels-name
+                                     (fn [~'input-message ~'output-handler]
+                                       ~(:send code)))
          :stop
          (stop-engine ~send-handle ~send-engine-name ~handle))
 
        (defstate ^:private ~parse-engine-name
          :start
-         (start-engine ~parse-handle
-                       (~engine-channels-name :raw-response)
-                       (fn [~'input-message]
-                         (let [~'output-handler (fn [response#]
-                                                  (info (str "[" (first ~'input-message) "]") (name ~parse-handle) "returned" (pr-str response#))
-                                                  (>!! (~engine-channels-name :parsed-response)
-                                                       (update-in ~'input-message [1 :response] (constantly response#))))]
-                           ~(:parse code))))
-
+         (start-parse-endpoint-engine ~handle
+                                      ~parse-handle
+                                      ~engine-channels-name
+                                      (fn [~'input-message ~'output-handler]
+                                        ~(:parse code)))
          :stop
          (stop-engine ~parse-handle ~parse-engine-name))
 
        (defstate ^:private ~process-engine-name
          :start
-         (start-engine ~process-handle
-                       (~engine-channels-name :parsed-response)
-                       (fn [~'input-message]
-                         (let [~'output-handler (fn [response#]
-                                                  (info (str "[" (first ~'input-message) "]") (name ~process-handle) "returned" (pr-str response#))
-                                                  (>!! (manifold-channel) [~handle (update-in ~'input-message [1] (comp (partial merge response#)
-                                                                                                                        #(dissoc % :response)))]))]
-                           ~(:process code))))
-
+         (start-process-endpoint-engine ~handle
+                                        ~process-handle
+                                        ~engine-channels-name
+                                        (fn [~'input-message ~'output-handler]
+                                          ~(:process code)))
          :stop
          (stop-engine ~process-handle ~process-engine-name)))))
