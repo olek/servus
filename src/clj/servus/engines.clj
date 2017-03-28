@@ -2,6 +2,7 @@
   (:require [clojure.core.async :refer [<! go timeout]]
             [clojure.stacktrace :refer [print-cause-trace]]
             [clojure.tools.logging :refer [info warn error]]
+            [clojure.string :as s]
             [servus.bulk-api :as bulk-api]
             [servus.engine-factory :refer [create-terminal-engine create-callout-engine]]))
 
@@ -36,13 +37,13 @@
            (proceed job-id))
   :process (let [response (:response (last message))]
              (proceed :create-batch
-                             {:job-id response}))
+                      {:job-id response}))
   :error (proceed :finish))
 
 (create-callout-engine :create-batch
   :send (let [[username session] message]
           (bulk-api/request :create-batch-request
-                            (str "job/" (:job-id session) "/batch")
+                            (s/join "/" ["job" (:job-id session) "batch"])
                             username
                             {:session session
                              :template "create-batch.sql"
@@ -60,14 +61,14 @@
                  response (:response session)
                  prior-batches (:queued-batch-ids session)]
              (proceed :check-batch
-                             {:queued-batch-ids (conj prior-batches response)}))
-  :error (proceed :close-job))
+                      {:queued-batch-ids (conj prior-batches response)}))
+  :error (proceed :close-job {:success false}))
 
 (create-callout-engine :check-batch
   :send (let [[username session] message]
           ;; TODO figure out way to handle more than one batch
           (bulk-api/request :check-batch-request
-                            (str "job/" (:job-id session) "/batch/" (first (:queued-batch-ids session)))
+                            (s/join "/" ["job" (:job-id session) "batch" (first (:queued-batch-ids session))])
                             username
                             {:session session}
                             proceed))
@@ -83,9 +84,9 @@
                  queued-batches (:queued-batch-ids session)
                  completed-batches (:completed-batch-ids session)]
              (if (= "Completed" batch-state)
-               (proceed :close-job {:queued-batch-ids (remove #{batch-id} queued-batches)
-                                    :completed-batch-ids (conj queued-batches batch-id)
-                                    :times-attempted nil})
+               (proceed :collect-batch-result-ids {:queued-batch-ids (remove #{batch-id} queued-batches)
+                                                   :completed-batch-ids (conj queued-batches batch-id)
+                                                   :times-attempted nil})
                (let [times-attempted (get session :times-attempted 1)]
                  (if (< times-attempted 3)
                    (do
@@ -98,7 +99,47 @@
                      (warn "Aborting retries of check-batch after" times-attempted "attempts")
                      (proceed :close-job {:success false
                                           :times-attempted nil}))))))
-  :error (proceed :close-job))
+  :error (proceed :close-job {:success false}))
+
+(create-callout-engine :collect-batch-result-ids
+  :send (let [[username session] message]
+          ;; TODO figure out way to handle more than one batch
+          (bulk-api/request :collect-batch-result-ids
+                            (s/join "/" ["job" (:job-id session) "batch" (first (:completed-batch-ids session)) "result"])
+                            username
+                            {:session session}
+                            proceed))
+
+  :parse (let [session (last message)
+               response (:response session)
+               batch-id (first (:completed-batch-ids session))
+               result-id (bulk-api/parse-and-extract response :result)]
+           (proceed [batch-id result-id]))
+
+  :process (let [session (last message)
+                 [batch-id result-id] (:response session)]
+             (proceed :collect-batch-result {:result-id result-id}))
+  :error (proceed :close-job {:success false}))
+
+(create-callout-engine :collect-batch-result
+  :send (let [[username session] message]
+          ;; TODO figure out way to handle more than one batch
+          (bulk-api/request :collect-batch-result
+                            (s/join "/" [ "job" (:job-id session) "batch" (first (:completed-batch-ids session)) "result" (:result-id session)])
+                            username
+                            {:session session}
+                            proceed))
+
+  :parse (let [session (last message)
+               response (:response session)
+               batch-id (first (:completed-batch-ids session))
+               csv-text (:body response)]
+           (proceed [batch-id csv-text]))
+
+  :process (let [session (last message)
+                 [batch-id csv-text] (:response session)]
+             (proceed :close-job {:result-id nil}))
+  :error (proceed :close-job {:success false}))
 
 (create-callout-engine :close-job
   :send (let [[username session] message]
@@ -112,7 +153,7 @@
 
   :parse (let [response (:response (last message))
                job-id (bulk-api/parse-and-extract response :id)]
-           (proceed job-id ))
+           (proceed job-id))
   :process (let [session (last message)
                  response (:response session)
                  success? (not= false (:success session))]
@@ -129,7 +170,7 @@
            (info (str "[" username "]") "drain-response make-believe parsing of the reply from lala-land")
            (proceed "NOOP"))
   :process (let [response (:response (last message))]
-             (proceed :finish nil))
+             (proceed :finish))
   :error (proceed :finish))
 
 (create-terminal-engine :finish

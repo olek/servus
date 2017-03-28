@@ -7,10 +7,15 @@
 
 (defn start-message-loop [handle ch engine-fn error-fn]
   (let [stop-channel (chan)
-        error-callback (fn [e message target]
-                         (>!! (engine-channel :error) (update-in message [1] (partial merge {:engine handle
-                                                                                             :response e})))
-                         (>!! (engine-channel target) (update-in message [1] dissoc :response)))]
+        error-callback (fn self
+                         ([e message target]
+                          (self e message target nil))
+                         ([e message target session-overrides]
+                          (>!! (engine-channel :error) (update-in message [1] #(merge %
+                                                                                      {:engine handle
+                                                                                       :response e})))
+                          (>!! (engine-channel target) (update-in message [1] (comp #(merge % session-overrides)
+                                                                                    #(dissoc % :response))))))]
     (go-loop [message :start]
       (condp = message
         :start
@@ -43,7 +48,7 @@
                 (when error-fn
                   (protected-error-fn (partial error-callback e message))))))))
       (if (and message
-                 (not= :stop-message-loop message))
+               (not= :stop-message-loop message))
         (recur (first (alts! [stop-channel ch] :priority true)))
         (close! stop-channel)))
     stop-channel))
@@ -74,10 +79,13 @@
   (start-message-loop loop-handle
                       (local-channels :parsed-response)
                       (fn [message]
-                        (let [proceed (fn [target session-overrides]
-                                        (info (str "[" (first message) "]") (name loop-handle) "returned" target (pr-str session-overrides))
-                                        (>!! (engine-channel target) (update-in message [1] (comp #(merge % session-overrides)
-                                                                                                  #(dissoc % :response)))))]
+                        (let [proceed (fn self
+                                        ([target]
+                                         (self target nil))
+                                        ([target session-overrides]
+                                         (info (str "[" (first message) "]") (name loop-handle) "returned" target (pr-str session-overrides))
+                                         (>!! (engine-channel target) (update-in message [1] (comp #(merge % session-overrides)
+                                                                                                   #(dissoc % :response))))))]
                           (engine-fn message proceed)))
                       error-fn))
 
