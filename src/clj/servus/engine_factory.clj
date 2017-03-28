@@ -68,11 +68,10 @@
   (start-message-loop loop-handle
                       (local-channels :raw-response)
                       (fn [message]
-                        (let [proceed (fn [response]
-                                        (info (str "[" (first message) "]") (name loop-handle) "returned" (pr-str response))
-                                        (>!! (local-channels :parsed-response)
-                                             (update-in message [1 :response] (constantly response))))]
-                          (engine-fn message proceed)))
+                        (let [response (engine-fn message)]
+                          (info (str "[" (first message) "]") (name loop-handle) "returned" (pr-str response))
+                          (>!! (local-channels :parsed-response)
+                               (update-in message [1 :response] (constantly response)))))
                       error-fn))
 
 (defn start-process-message-loop [loop-handle local-channels engine-fn error-fn]
@@ -143,7 +142,7 @@
          :start
          (start-parse-message-loop ~parse-handle
                                    ~engine-channels-name
-                                   (fn [~'message ~'proceed]
+                                   (fn [~'message]
                                      ~(:parse code))
                                    (fn [~'proceed] ~(:error code)))
          :stop

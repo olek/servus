@@ -15,7 +15,7 @@
                session-id (:sessionId data)
                server-instance (-> #"\w+.salesforce.com"
                                    (re-find (:serverUrl data)))]
-           (proceed [session-id server-instance]))
+           [session-id server-instance])
   :process (let [response (:response (last message))]
              (proceed :create-job
                              {:session-id (first response)
@@ -34,7 +34,7 @@
 
   :parse (let [response (:response (last message))
                job-id (bulk-api/parse-and-extract response :id)]
-           (proceed job-id))
+           job-id)
   :process (let [response (:response (last message))]
              (proceed :create-batch
                       {:job-id response}))
@@ -51,12 +51,10 @@
                                     :fields "Subject"
                                     :limit 2}}
                             proceed))
-
   :parse (let [session (last message)
                response (:response session)
                batch-id (bulk-api/parse-and-extract response :id)]
-           (proceed batch-id))
-
+           batch-id)
   :process (let [session (last message)
                  response (:response session)
                  prior-batches (:queued-batch-ids session)]
@@ -72,13 +70,11 @@
                             username
                             {:session session}
                             proceed))
-
   :parse (let [session (last message)
                response (:response session)
                batch-state (bulk-api/parse-and-extract response :state)
                batch-id (bulk-api/parse-and-extract response :id)]
-           (proceed [batch-id batch-state]))
-
+           [batch-id batch-state])
   :process (let [session (last message)
                  [batch-id batch-state] (:response session)
                  queued-batches (:queued-batch-ids session)
@@ -109,13 +105,11 @@
                             username
                             {:session session}
                             proceed))
-
   :parse (let [session (last message)
                response (:response session)
                batch-id (first (:completed-batch-ids session))
                result-id (bulk-api/parse-and-extract response :result)]
-           (proceed [batch-id result-id]))
-
+           [batch-id result-id])
   :process (let [session (last message)
                  [batch-id result-id] (:response session)]
              (proceed :collect-batch-result {:result-id result-id}))
@@ -129,13 +123,11 @@
                             username
                             {:session session}
                             proceed))
-
   :parse (let [session (last message)
                response (:response session)
                batch-id (first (:completed-batch-ids session))
                csv-text (:body response)]
-           (proceed [batch-id csv-text]))
-
+           [batch-id csv-text])
   :process (let [session (last message)
                  [batch-id csv-text] (:response session)]
              (proceed :close-job {:result-id nil}))
@@ -153,7 +145,7 @@
 
   :parse (let [response (:response (last message))
                job-id (bulk-api/parse-and-extract response :id)]
-           (proceed job-id))
+           job-id)
   :process (let [session (last message)
                  response (:response session)
                  success? (not= false (:success session))]
@@ -168,7 +160,7 @@
           (proceed "NOOP"))
   :parse (let [[username session] message]
            (info (str "[" username "]") "drain-response make-believe parsing of the reply from lala-land")
-           (proceed "NOOP"))
+           "NOOP")
   :process (let [response (:response (last message))]
              (proceed :finish))
   :error (proceed :finish))
