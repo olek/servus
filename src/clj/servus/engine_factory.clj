@@ -74,9 +74,9 @@
   (start-message-loop loop-handle
                       (local-channels :parsed-response)
                       (fn [message]
-                        (let [proceed (fn [target response]
-                                        (info (str "[" (first message) "]") (name loop-handle) "returned" (pr-str response))
-                                        (>!! (engine-channel target) (update-in message [1] (comp (partial merge response)
+                        (let [proceed (fn [target session-overrides]
+                                        (info (str "[" (first message) "]") (name loop-handle) "returned" target (pr-str session-overrides))
+                                        (>!! (engine-channel target) (update-in message [1] (comp #(merge % session-overrides)
                                                                                                   #(dissoc % :response)))))]
                           (engine-fn message proceed)))
                       error-fn))

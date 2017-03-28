@@ -1,6 +1,7 @@
 (ns servus.engines
-  (:require [clojure.stacktrace :refer [print-cause-trace]]
-            [clojure.tools.logging :refer [info error]]
+  (:require [clojure.core.async :refer [<! go timeout]]
+            [clojure.stacktrace :refer [print-cause-trace]]
+            [clojure.tools.logging :refer [info warn error]]
             [servus.bulk-api :as bulk-api]
             [servus.engine-factory :refer [create-terminal-engine create-callout-engine]]))
 
@@ -83,8 +84,20 @@
                  completed-batches (:completed-batch-ids session)]
              (if (= "Completed" batch-state)
                (proceed :close-job {:queued-batch-ids (remove #{batch-id} queued-batches)
-                                :completed-batch-ids (conj queued-batches batch-id)})
-               (proceed :close-job nil)))
+                                    :completed-batch-ids (conj queued-batches batch-id)
+                                    :times-attempted nil})
+               (let [times-attempted (get session :times-attempted 1)]
+                 (if (< times-attempted 3)
+                   (do
+                     (warn "Postponing check-batch, attempted" times-attempted "times")
+                     (go
+                       (<! (timeout 5000))
+                       (warn "Retrying check-batch, attempted" times-attempted "times")
+                       (proceed :check-batch {:times-attempted (inc times-attempted)})))
+                   (do
+                     (warn "Aborting retries of check-batch after" times-attempted "attempts")
+                     (proceed :close-job {:success false
+                                          :times-attempted nil}))))))
   :error (proceed :close-job))
 
 (create-callout-engine :close-job
@@ -100,9 +113,12 @@
   :parse (let [response (:response (last message))
                job-id (bulk-api/parse-and-extract response :id)]
            (proceed job-id ))
-  :process (let [response (:response (last message))]
-             (proceed :drain
-                             {:job-id nil}))
+  :process (let [session (last message)
+                 response (:response session)
+                 success? (not= false (:success session))]
+             (if success?
+               (proceed :drain {:job-id nil})
+               (proceed :finish {:job-id nil})))
   :error (proceed :finish))
 
 (create-callout-engine :drain
