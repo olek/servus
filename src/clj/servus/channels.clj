@@ -9,9 +9,6 @@
   :start
   (atom {}))
 
-  ;:stop
-  ;(close! (:manifold @channels)))
-
 (defn create-channel! [engine]
   (let [ch (chan)]
     (swap! channels
@@ -31,9 +28,6 @@
            dissoc
            (keyword engine))))
 
-
-;(defn- update-message [message field update-fn]
-;  (update-in message [1 field] update-fn))
 
 ;(defn- special-route [source message]
 ;  (cond
