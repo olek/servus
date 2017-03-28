@@ -57,11 +57,11 @@
   (start-message-loop loop-handle
                       (create-channel! channel-name)
                       (fn [message]
-                        (let [proceed (fn [response]
-                                        (info (str "[" (first message) "]") (name loop-handle) "returned" (pr-str (:body response)))
-                                        (>!! (local-channels :raw-response)
-                                             (update-in message [1 :response] (constantly response))))]
-                          (engine-fn message proceed)))
+                        (let [callback (fn [response]
+                                         (info (str "[" (first message) "]") (name loop-handle) "returned" (pr-str (:body response)))
+                                         (>!! (local-channels :raw-response)
+                                              (update-in message [1 :response] (constantly response))))]
+                          (engine-fn message callback)))
                       error-fn))
 
 (defn start-parse-message-loop [loop-handle local-channels engine-fn error-fn]
@@ -78,14 +78,14 @@
   (start-message-loop loop-handle
                       (local-channels :parsed-response)
                       (fn [message]
-                        (let [proceed (fn self
-                                        ([target]
-                                         (self target nil))
-                                        ([target session-overrides]
-                                         (info (str "[" (first message) "]") (name loop-handle) "returned" target (pr-str session-overrides))
-                                         (>!! (engine-channel target) (update-in message [1] (comp #(merge % session-overrides)
-                                                                                                   #(dissoc % :response))))))]
-                          (engine-fn message proceed)))
+                        (let [transition-fn (fn self
+                                              ([target]
+                                               (self target nil))
+                                              ([target session-overrides]
+                                               (info (str "[" (first message) "]") (name loop-handle) "returned" target (pr-str session-overrides))
+                                               (>!! (engine-channel target) (update-in message [1] (comp #(merge % session-overrides)
+                                                                                                         #(dissoc % :response))))))]
+                          (engine-fn message transition-fn)))
                       error-fn))
 
 (defn stop-message-loop
@@ -132,9 +132,9 @@
          (start-send-message-loop ~send-handle
                                   ~handle
                                   ~engine-channels-name
-                                  (fn [~'message ~'proceed]
+                                  (fn [~'message ~'callback]
                                     ~(:send code))
-                                  (fn [~'proceed] ~(:error code)))
+                                  (fn [~'transition-to] ~(:error code)))
          :stop
          (stop-message-loop ~send-engine-name ~handle))
 
@@ -144,7 +144,7 @@
                                    ~engine-channels-name
                                    (fn [~'message]
                                      ~(:parse code))
-                                   (fn [~'proceed] ~(:error code)))
+                                   (fn [~'transition-to] ~(:error code)))
          :stop
          (stop-message-loop ~parse-engine-name))
 
@@ -152,9 +152,9 @@
          :start
          (start-process-message-loop ~process-handle
                                      ~engine-channels-name
-                                     (fn [~'message ~'proceed]
+                                     (fn [~'message ~'transition-to]
                                        (let [~'channels engine-channel]
                                          ~(:process code)))
-                                     (fn [~'proceed] ~(:error code)))
+                                     (fn [~'transition-to] ~(:error code)))
          :stop
          (stop-message-loop ~process-engine-name)))))
