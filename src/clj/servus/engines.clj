@@ -8,7 +8,7 @@
 
 (create-callout-engine :login
   :send (let [[username {:keys [password]}] message]
-          (sf-api/login-request :login-request username password callback))
+          [:login password])
   :parse (let [response (:response (last message))
                data (sf-api/parse-and-extract response
                                               :sessionId :serverUrl)
@@ -25,12 +25,9 @@
 
 (create-callout-engine :count-records
   :send (let [[username session] message]
-          (sf-api/data-request :count-records
-                               (str "query?q=select+count()+from+case")
-                               username
-                               {:session session}
-                               callback))
-
+          [:data-request
+           (str "query?q=select+count()+from+case")
+           nil])
   :parse (let [response (:response (last message))
                total-size (sf-api/parse-and-extract response :totalSize)]
            total-size)
@@ -39,13 +36,10 @@
 
 (create-callout-engine :create-job
   :send (let [[username session] message]
-          (sf-api/bulk-request :create-job-request
-                               "job"
-                               username
-                               {:session session
-                                :template "create-job.xml"
-                                :data {:object "Case"}}
-                               callback))
+          [:bulk-request
+           "job"
+           {:template "create-job.xml"
+            :data {:object "Case"}}])
 
   :parse (let [response (:response (last message))
                job-id (sf-api/parse-and-extract response :id)]
@@ -57,15 +51,12 @@
 
 (create-callout-engine :create-batch
   :send (let [[username session] message]
-          (sf-api/bulk-request :create-batch-request
-                               (s/join "/" ["job" (:job-id session) "batch"])
-                               username
-                               {:session session
-                                :template "create-batch.sql"
-                                :data {:object "Case"
-                                       :fields "Subject"
-                                       :limit 2}}
-                               callback))
+          [:bulk-request
+           (s/join "/" ["job" (:job-id session) "batch"])
+           {:template "create-batch.sql"
+            :data {:object "Case"
+                   :fields "Subject"
+                   :limit 2}}])
   :parse (let [session (last message)
                response (:response session)
                batch-id (sf-api/parse-and-extract response :id)]
@@ -81,11 +72,9 @@
 (create-callout-engine :check-batch
   :send (let [[username session] message]
           ;; TODO figure out way to handle more than one batch
-          (sf-api/bulk-request :check-batch-request
-                               (s/join "/" ["job" (:job-id session) "batch" (first (:queued-batch-ids session))])
-                               username
-                               {:session session}
-                               callback))
+          [:bulk-request
+           (s/join "/" ["job" (:job-id session) "batch" (first (:queued-batch-ids session))])
+           nil])
   :parse (let [session (last message)
                response (:response session)
                batch-state (sf-api/parse-and-extract response :state)
@@ -123,11 +112,9 @@
 (create-callout-engine :collect-batch-result-ids
   :send (let [[username session] message]
           ;; TODO figure out way to handle more than one batch
-          (sf-api/bulk-request :collect-batch-result-ids
-                               (s/join "/" ["job" (:job-id session) "batch" (first (:completed-batch-ids session)) "result"])
-                               username
-                               {:session session}
-                               callback))
+          [:bulk-request
+           (s/join "/" ["job" (:job-id session) "batch" (first (:completed-batch-ids session)) "result"])
+           nil])
   :parse (let [session (last message)
                response (:response session)
                batch-id (first (:completed-batch-ids session))
@@ -141,11 +128,9 @@
 (create-callout-engine :collect-batch-result
   :send (let [[username session] message]
           ;; TODO figure out way to handle more than one batch
-          (sf-api/bulk-request :collect-batch-result
-                               (s/join "/" [ "job" (:job-id session) "batch" (first (:completed-batch-ids session)) "result" (:result-id session)])
-                               username
-                               {:session session}
-                               callback))
+          [:bulk-request
+           (s/join "/" [ "job" (:job-id session) "batch" (first (:completed-batch-ids session)) "result" (:result-id session)])
+           nil])
   :parse (let [session (last message)
                response (:response session)
                batch-id (first (:completed-batch-ids session))
@@ -158,13 +143,10 @@
 
 (create-callout-engine :close-job
   :send (let [[username session] message]
-          (sf-api/bulk-request :close-job-request
-                               (str "job/" (:job-id session))
-                               username
-                               {:session session
-                                :template "close-job.xml"
-                                :data {}}
-                               callback))
+          [:bulk-request
+           (str "job/" (:job-id session))
+           {:template "close-job.xml"
+            :data {}}])
 
   :parse (let [response (:response (last message))
                job-id (sf-api/parse-and-extract response :id)]
@@ -175,7 +157,7 @@
 (create-callout-engine :drain
   :send (let [[username session] message]
           (info (str "[" username "]") "drain-request make-believe draining collected data to lala-land")
-          (callback "NOOP"))
+          nil)
   :parse (let [[username session] message]
            (info (str "[" username "]") "drain-response make-believe parsing of the reply from lala-land")
            "NOOP")

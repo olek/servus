@@ -65,9 +65,8 @@
                                 headers)}
                handler)))
 
-(defn data-request [engine path username options handler]
-  (let [{{:keys [session-id server-instance]} :session
-         template :template
+(defn data-request [engine username session-id server-instance path options handler]
+  (let [{template :template
          data :data} options]
     (do-request engine
                 username
@@ -80,9 +79,8 @@
                                   "text/csv")}
                 handler)))
 
-(defn bulk-request [engine path username options handler]
-  (let [{{:keys [session-id server-instance]} :session
-         template :template
+(defn bulk-request [engine username session-id server-instance path options handler]
+  (let [{template :template
          data :data} options]
     (do-request engine
                 username
@@ -94,7 +92,9 @@
                                   "text/csv")}
                 handler)))
 
-(defn login-request [engine username password handler]
+;; TODO figure out how to solve ugly problem of 2 args (session-id and server-instance) that are not
+;; actually meaningful/needed here
+(defn login-request [engine username session-id server-instance password handler]
   (do-request engine
               username
               login-url

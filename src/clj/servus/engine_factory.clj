@@ -3,7 +3,8 @@
             [clojure.core.async :refer [>!! go-loop chan alts! close!]]
             [clojure.stacktrace :refer [print-cause-trace]]
             [mount.core :refer [defstate]]
-            [servus.channels :refer [create-channel! close-channel! engine-channel]]))
+            [servus.channels :refer [create-channel! close-channel! engine-channel]]
+            [servus.salesforce-api :as sf-api]))
 
 (defn start-message-loop [handle ch engine-fn error-fn]
   (let [stop-channel (chan)
@@ -53,15 +54,25 @@
         (close! stop-channel)))
     stop-channel))
 
+(def ^:private request-map {:login sf-api/login-request
+                            :data-request sf-api/data-request
+                            :bulk-request sf-api/bulk-request})
+
 (defn start-send-message-loop [loop-handle channel-name local-channels engine-fn error-fn]
   (start-message-loop loop-handle
                       (create-channel! channel-name)
                       (fn [message]
-                        (let [callback (fn [response]
-                                         (info (str "[" (first message) "]") (name loop-handle) "returned" (pr-str (:body response)))
+                        (let [username (first message)
+                              session (last message)
+                              callback (fn [response]
+                                         (info (str "[" username "]") (name loop-handle) "returned" (pr-str (:body response)))
                                          (>!! (local-channels :raw-response)
-                                              (update-in message [1 :response] (constantly response))))]
-                          (engine-fn message callback)))
+                                              (update-in message [1 :response] (constantly response))))
+                              data (engine-fn message callback)]
+                          (when data
+                            (let [request (first data)
+                                  args (concat [channel-name username (:session-id session) (:server-instance session)] (rest data) [callback])]
+                              (apply (request-map request) args)))))
                       error-fn))
 
 (defn start-parse-message-loop [loop-handle local-channels engine-fn error-fn]
