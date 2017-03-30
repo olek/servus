@@ -63,51 +63,83 @@
            batch-id)
   :process (let [session (last message)
                  response (:response session)
-                 prior-batches (:queued-batch-ids session)]
+                 prior-batches (:queued-batch-ids session #{})]
              (transition-to :close-job)
-             (transition-to :check-batch
+             (transition-to :check-batches)
+             #_(transition-to :check-batch
                             {:queued-batch-ids (conj prior-batches response)}))
   :error (transition-to :close-job))
 
-(create-callout-engine :check-batch
+(create-callout-engine :check-batches
   :send (let [[username session] message]
-          ;; TODO figure out way to handle more than one batch
           [:bulk-request
-           (s/join "/" ["job" (:job-id session) "batch" (first (:queued-batch-ids session))])
+           (s/join "/" ["job" (:job-id session) "batch"])
            nil])
   :parse (let [session (last message)
                response (:response session)
-               batch-state (sf-api/parse-and-extract response :state)
-               batch-id (sf-api/parse-and-extract response :id)]
-           [batch-id batch-state])
+               batch-state (sf-api/parse-and-extract-all response :id :state)]
+           batch-state)
   :process (let [session (last message)
-                 [batch-id batch-state] (:response session)
-                 queued-batches (:queued-batch-ids session)
+                 response (:response session)
                  completed-batches (:completed-batch-ids session)]
-             (condp = batch-state
-               "Completed"
-               (transition-to :collect-batch-result-ids {:queued-batch-ids (remove #{batch-id} queued-batches)
-                                                         :completed-batch-ids (conj queued-batches batch-id)
-                                                         :times-attempted nil})
-               "Not Processed"
-               (comment "PK chunking enabled, real work done in extra batches")
-
-               "Queued"
+             (doseq [[batch-id batch-status] response]
+               (when (and (= batch-status "Completed")
+                          (not (some #{batch-id} completed-batches)))
+                 (transition-to :collect-batch-result-ids {:completed-batch-ids (conj completed-batches batch-id)
+                                                           :times-attempted nil})))
+             (when (some #{"Queued"} (map last response))
                (let [times-attempted (get session :times-attempted 1)]
                  (if (< times-attempted 3)
                    (do
-                     (warn "Postponing check-batch, attempted" times-attempted "times")
+                     (warn "Postponing check-batches, attempted" times-attempted "times")
                      (go
                        (<! (timeout 5000))
-                       (warn "Retrying check-batch, attempted" times-attempted "times")
-                       (transition-to :check-batch {:times-attempted (inc times-attempted)})))
+                       (warn "Retrying check-batches, attempted" times-attempted "times")
+                       (transition-to :check-batches {:times-attempted (inc times-attempted)})))
                    (do
-                     (warn "Aborting retries of check-batch after" times-attempted "attempts")
-                     (transition-to :close-job {:times-attempted nil}))))
-
-               ;;"Failed" "InProgress"
-               (transition-to :finish {:times-attempted nil})))
+                     (warn "Aborting retries of check-batches after" times-attempted "attempts")
+                     (transition-to :finish {:times-attempted nil}))))))
   :error (transition-to :finish))
+
+;(create-callout-engine :check-batch
+;  :send (let [[username session] message]
+;          ;; TODO figure out way to handle more than one batch
+;          [:bulk-request
+;           (s/join "/" ["job" (:job-id session) "batch" (first (:queued-batch-ids session))])
+;           nil])
+;  :parse (let [session (last message)
+;               response (:response session)
+;               batch-state (sf-api/parse-and-extract response :state)
+;               batch-id (sf-api/parse-and-extract response :id)]
+;           [batch-id batch-state])
+;  :process (let [session (last message)
+;                 [batch-id batch-state] (:response session)
+;                 queued-batches (:queued-batch-ids session #{})
+;                 completed-batches (:completed-batch-ids session #{})]
+;             (condp = batch-state
+;               "Completed"
+;               (transition-to :collect-batch-result-ids {:queued-batch-ids (disj queued-batches #{batch-id})
+;                                                         :completed-batch-ids (conj queued-batches batch-id)
+;                                                         :times-attempted nil})
+;               "Not Processed"
+;               (comment "PK chunking enabled, real work done in extra batches")
+
+;               "Queued"
+;               (let [times-attempted (get session :times-attempted 1)]
+;                 (if (< times-attempted 3)
+;                   (do
+;                     (warn "Postponing check-batch, attempted" times-attempted "times")
+;                     (go
+;                       (<! (timeout 5000))
+;                       (warn "Retrying check-batch, attempted" times-attempted "times")
+;                       (transition-to :check-batch {:times-attempted (inc times-attempted)})))
+;                   (do
+;                     (warn "Aborting retries of check-batch after" times-attempted "attempts")
+;                     (transition-to :close-job {:times-attempted nil}))))
+
+;               ;;"Failed" "InProgress"
+;               (transition-to :finish {:times-attempted nil})))
+;  :error (transition-to :finish))
 
 (create-callout-engine :collect-batch-result-ids
   :send (let [[username session] message]

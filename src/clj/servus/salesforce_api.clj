@@ -20,6 +20,14 @@
        :content
        first))
 
+
+(defn xml-node-contents [xml node-names]
+  (->> xml
+       xml-seq
+       (filter #(some #{(:tag %)} node-names))
+       (map :content)
+       (map first)))
+
 (defn parse-xml [body]
   (->> body
        .getBytes
@@ -39,6 +47,14 @@
                         (first tags))
       (zipmap tags
               (map (partial xml-node-content xml) tags)))))
+
+(defn parse-and-extract-all
+  [response & tags]
+  (let [xml (parse-response-body response)
+        raw-list (xml-node-contents xml tags)]
+    (if (= (count tags) 1)
+      raw-list
+      (partition (count tags) raw-list))))
 
 (defn- generate-payload [template data]
   (when (and template data)
