@@ -1,4 +1,4 @@
-(ns servus.bulk-api
+(ns servus.salesforce-api
   (:require [clojure.tools.logging :refer [info warn]]
             [org.httpkit.client :as http]
             [clostache.parser :refer [render-resource]]
@@ -9,7 +9,8 @@
 (def ^:private socket-timeout 7000) ; in ms
 (def ^:private keepalive 0) ; in ms
 (def ^:private login-url "https://login.salesforce.com/services/Soap/u/39.0")
-(def ^:private service-prefix "/services/async/39.0/")
+(def ^:private bulk-api-prefix "/services/async/39.0/")
+(def ^:private data-api-prefix "/services/data/v39.0/")
 
 (defn xml-node-content [xml node-name]
   (->> xml
@@ -64,13 +65,28 @@
                                 headers)}
                handler)))
 
-(defn request [engine path username options handler]
+(defn data-request [engine path username options handler]
   (let [{{:keys [session-id server-instance]} :session
          template :template
          data :data} options]
     (do-request engine
                 username
-                (str "https://" server-instance service-prefix path)
+                (str "https://" server-instance data-api-prefix path)
+                (generate-payload template data)
+                {"Authorization" (str "Bearer " session-id)
+                 "Accept" "application/xml"
+                 "Content-Type" (when (and template
+                                           (.endsWith template ".sql"))
+                                  "text/csv")}
+                handler)))
+
+(defn bulk-request [engine path username options handler]
+  (let [{{:keys [session-id server-instance]} :session
+         template :template
+         data :data} options]
+    (do-request engine
+                username
+                (str "https://" server-instance bulk-api-prefix path)
                 (generate-payload template data)
                 {"X-SFDC-Session" session-id
                  "Content-Type" (when (and template

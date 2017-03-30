@@ -82,7 +82,9 @@
                                               ([target]
                                                (self target nil))
                                               ([target session-overrides]
-                                               (info (str "[" (first message) "]") (name loop-handle) "returned" target (pr-str session-overrides))
+                                               (info (str "[" (first message) "]")
+                                                     (name loop-handle) "transitions to" target
+                                                     "with" (pr-str session-overrides))
                                                (>!! (engine-channel target) (update-in message [1] (comp #(merge % session-overrides)
                                                                                                          #(dissoc % :response))))))]
                           (engine-fn message transition-fn)))

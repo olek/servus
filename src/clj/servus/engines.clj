@@ -3,37 +3,52 @@
             [clojure.stacktrace :refer [print-cause-trace]]
             [clojure.tools.logging :refer [info warn error]]
             [clojure.string :as s]
-            [servus.bulk-api :as bulk-api]
+            [servus.salesforce-api :as sf-api]
             [servus.engine-factory :refer [create-terminal-engine create-callout-engine]]))
 
 (create-callout-engine :login
   :send (let [[username {:keys [password]}] message]
-          (bulk-api/login-request :login-request username password callback))
+          (sf-api/login-request :login-request username password callback))
   :parse (let [response (:response (last message))
-               data (bulk-api/parse-and-extract response
-                                                :sessionId :serverUrl)
+               data (sf-api/parse-and-extract response
+                                              :sessionId :serverUrl)
                session-id (:sessionId data)
                server-instance (-> #"\w+.salesforce.com"
                                    (re-find (:serverUrl data)))]
            [session-id server-instance])
-  :process (let [response (:response (last message))]
-             (transition-to :create-job
-                            {:session-id (first response)
-                             :server-instance (last response)}))
+  :process (let [response (:response (last message))
+                 data {:session-id (first response)
+                       :server-instance (last response)}]
+             (transition-to :count-records data)
+             (transition-to :create-job data))
   :error (transition-to :finish))
+
+(create-callout-engine :count-records
+  :send (let [[username session] message]
+          (sf-api/data-request :count-records
+                               (str "query?q=select+count()+from+case")
+                               username
+                               {:session session}
+                               callback))
+
+  :parse (let [response (:response (last message))
+               total-size (sf-api/parse-and-extract response :totalSize)]
+           total-size)
+  :process nil
+  :error nil)
 
 (create-callout-engine :create-job
   :send (let [[username session] message]
-          (bulk-api/request :create-job-request
-                            "job"
-                            username
-                            {:session session
-                             :template "create-job.xml"
-                             :data {:object "Case"}}
-                            callback))
+          (sf-api/bulk-request :create-job-request
+                               "job"
+                               username
+                               {:session session
+                                :template "create-job.xml"
+                                :data {:object "Case"}}
+                               callback))
 
   :parse (let [response (:response (last message))
-               job-id (bulk-api/parse-and-extract response :id)]
+               job-id (sf-api/parse-and-extract response :id)]
            job-id)
   :process (let [response (:response (last message))]
              (transition-to :create-batch
@@ -42,47 +57,53 @@
 
 (create-callout-engine :create-batch
   :send (let [[username session] message]
-          (bulk-api/request :create-batch-request
-                            (s/join "/" ["job" (:job-id session) "batch"])
-                            username
-                            {:session session
-                             :template "create-batch.sql"
-                             :data {:object "Case"
-                                    :fields "Subject"
-                                    :limit 2}}
-                            callback))
+          (sf-api/bulk-request :create-batch-request
+                               (s/join "/" ["job" (:job-id session) "batch"])
+                               username
+                               {:session session
+                                :template "create-batch.sql"
+                                :data {:object "Case"
+                                       :fields "Subject"
+                                       :limit 2}}
+                               callback))
   :parse (let [session (last message)
                response (:response session)
-               batch-id (bulk-api/parse-and-extract response :id)]
+               batch-id (sf-api/parse-and-extract response :id)]
            batch-id)
   :process (let [session (last message)
                  response (:response session)
                  prior-batches (:queued-batch-ids session)]
+             (transition-to :close-job)
              (transition-to :check-batch
                             {:queued-batch-ids (conj prior-batches response)}))
-  :error (transition-to :close-job {:success false}))
+  :error (transition-to :close-job))
 
 (create-callout-engine :check-batch
   :send (let [[username session] message]
           ;; TODO figure out way to handle more than one batch
-          (bulk-api/request :check-batch-request
-                            (s/join "/" ["job" (:job-id session) "batch" (first (:queued-batch-ids session))])
-                            username
-                            {:session session}
-                            callback))
+          (sf-api/bulk-request :check-batch-request
+                               (s/join "/" ["job" (:job-id session) "batch" (first (:queued-batch-ids session))])
+                               username
+                               {:session session}
+                               callback))
   :parse (let [session (last message)
                response (:response session)
-               batch-state (bulk-api/parse-and-extract response :state)
-               batch-id (bulk-api/parse-and-extract response :id)]
+               batch-state (sf-api/parse-and-extract response :state)
+               batch-id (sf-api/parse-and-extract response :id)]
            [batch-id batch-state])
   :process (let [session (last message)
                  [batch-id batch-state] (:response session)
                  queued-batches (:queued-batch-ids session)
                  completed-batches (:completed-batch-ids session)]
-             (if (= "Completed" batch-state)
+             (condp = batch-state
+               "Completed"
                (transition-to :collect-batch-result-ids {:queued-batch-ids (remove #{batch-id} queued-batches)
                                                          :completed-batch-ids (conj queued-batches batch-id)
                                                          :times-attempted nil})
+               "Not Processed"
+               (comment "PK chunking enabled, real work done in extra batches")
+
+               "Queued"
                (let [times-attempted (get session :times-attempted 1)]
                  (if (< times-attempted 3)
                    (do
@@ -93,36 +114,38 @@
                        (transition-to :check-batch {:times-attempted (inc times-attempted)})))
                    (do
                      (warn "Aborting retries of check-batch after" times-attempted "attempts")
-                     (transition-to :close-job {:success false
-                                                :times-attempted nil}))))))
-  :error (transition-to :close-job {:success false}))
+                     (transition-to :close-job {:times-attempted nil}))))
+
+               ;;"Failed" "InProgress"
+               (transition-to :finish {:times-attempted nil})))
+  :error (transition-to :finish))
 
 (create-callout-engine :collect-batch-result-ids
   :send (let [[username session] message]
           ;; TODO figure out way to handle more than one batch
-          (bulk-api/request :collect-batch-result-ids
-                            (s/join "/" ["job" (:job-id session) "batch" (first (:completed-batch-ids session)) "result"])
-                            username
-                            {:session session}
-                            callback))
+          (sf-api/bulk-request :collect-batch-result-ids
+                               (s/join "/" ["job" (:job-id session) "batch" (first (:completed-batch-ids session)) "result"])
+                               username
+                               {:session session}
+                               callback))
   :parse (let [session (last message)
                response (:response session)
                batch-id (first (:completed-batch-ids session))
-               result-id (bulk-api/parse-and-extract response :result)]
+               result-id (sf-api/parse-and-extract response :result)]
            [batch-id result-id])
   :process (let [session (last message)
                  [batch-id result-id] (:response session)]
              (transition-to :collect-batch-result {:result-id result-id}))
-  :error (transition-to :close-job {:success false}))
+  :error (transition-to :finish))
 
 (create-callout-engine :collect-batch-result
   :send (let [[username session] message]
           ;; TODO figure out way to handle more than one batch
-          (bulk-api/request :collect-batch-result
-                            (s/join "/" [ "job" (:job-id session) "batch" (first (:completed-batch-ids session)) "result" (:result-id session)])
-                            username
-                            {:session session}
-                            callback))
+          (sf-api/bulk-request :collect-batch-result
+                               (s/join "/" [ "job" (:job-id session) "batch" (first (:completed-batch-ids session)) "result" (:result-id session)])
+                               username
+                               {:session session}
+                               callback))
   :parse (let [session (last message)
                response (:response session)
                batch-id (first (:completed-batch-ids session))
@@ -130,29 +153,24 @@
            [batch-id csv-text])
   :process (let [session (last message)
                  [batch-id csv-text] (:response session)]
-             (transition-to :close-job {:result-id nil}))
-  :error (transition-to :close-job {:success false}))
+             (transition-to :drain {:result-id nil}))
+  :error (transition-to :finish))
 
 (create-callout-engine :close-job
   :send (let [[username session] message]
-          (bulk-api/request :close-job-request
-                            (str "job/" (:job-id session))
-                            username
-                            {:session session
-                             :template "close-job.xml"
-                             :data {}}
-                            callback))
+          (sf-api/bulk-request :close-job-request
+                               (str "job/" (:job-id session))
+                               username
+                               {:session session
+                                :template "close-job.xml"
+                                :data {}}
+                               callback))
 
   :parse (let [response (:response (last message))
-               job-id (bulk-api/parse-and-extract response :id)]
+               job-id (sf-api/parse-and-extract response :id)]
            job-id)
-  :process (let [session (last message)
-                 response (:response session)
-                 success? (not= false (:success session))]
-             (if success?
-               (transition-to :drain {:job-id nil})
-               (transition-to :finish {:job-id nil})))
-  :error (transition-to :finish))
+  :process nil
+  :error nil)
 
 (create-callout-engine :drain
   :send (let [[username session] message]
