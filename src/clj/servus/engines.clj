@@ -177,11 +177,11 @@
 
 (create-terminal-engine :error
   (let [source (name (:engine message))
-        response (or (:response message)
-                     message)
+        value (:error message)
+        failed-message (:message message)
 
-        text (if (isa? (class response) Exception)
-               (str "caused error " (with-out-str (print-cause-trace response)))
-               (str "detected error " (pr-str response)))]
+        text (if (isa? (class value) Exception)
+               (str "caused error " (with-out-str (print-cause-trace value)))
+               (str "detected error " (pr-str value)))]
     ;; TODO extract/output exceptionCode and exceptionMessage tags nicely if available in response xml
-    (error (str "[" username "]") source text)))
+    (error (str "[" username "]") source (pr-str failed-message) text)))
