@@ -4,7 +4,8 @@
             [clojure.stacktrace :refer [print-cause-trace]]
             [mount.core :refer [defstate]]
             [servus.channels :refer [create-channel! close-channel! engine-channel]]
-            [servus.salesforce-api :as sf-api]))
+            [servus.salesforce-api :as sf-api]
+            [servus.store :as store]))
 
 (defn start-message-loop [handle ch engine-fn error-fn]
   (let [stop-channel (chan)
@@ -43,7 +44,7 @@
                    error-fn)
             (protected-error-fn (partial error-callback response message))
             (try
-              (engine-fn message)
+              (engine-fn (first message) (last message))
               (catch Exception e
                 (error (str "Caught exception in " (name handle) ":") (str e))
                 (when error-fn
@@ -61,14 +62,13 @@
 (defn start-send-message-loop [loop-handle channel-name local-channels engine-fn error-fn]
   (start-message-loop loop-handle
                       (create-channel! channel-name)
-                      (fn [message]
-                        (let [username (first message)
-                              session (last message)
+                      (fn [username message]
+                        (let [session (store/session username)
                               callback (fn [response]
                                          (info (str "[" username "]") (name loop-handle) "returned" (pr-str (:body response)))
                                          (>!! (local-channels :raw-response)
-                                              (update-in message [1 :response] (constantly response))))
-                              data (engine-fn message callback)]
+                                              [username (update message :response (constantly response))]))
+                              data (engine-fn username message session callback)]
                           (when data
                             (let [request (first data)
                                   args (concat [channel-name username (:session-id session) (:server-instance session)] (rest data) [callback])]
@@ -78,27 +78,34 @@
 (defn start-parse-message-loop [loop-handle local-channels engine-fn error-fn]
   (start-message-loop loop-handle
                       (local-channels :raw-response)
-                      (fn [message]
-                        (let [response (engine-fn message)]
-                          (info (str "[" (first message) "]") (name loop-handle) "returned" (pr-str response))
+                      (fn [username message]
+                        (let [response (engine-fn username message (store/session username)
+                                                  (:response message))]
+                          (info (str "[" username "]") (name loop-handle) "returned" (pr-str response))
                           (>!! (local-channels :parsed-response)
-                               (update-in message [1 :response] (constantly response)))))
+                               [username (update message :response (constantly response))])))
                       error-fn))
 
 (defn start-process-message-loop [loop-handle local-channels engine-fn error-fn]
   (start-message-loop loop-handle
                       (local-channels :parsed-response)
-                      (fn [message]
+                      (fn [username message]
                         (let [transition-fn (fn self
                                               ([target]
                                                (self target nil))
-                                              ([target session-overrides]
-                                               (info (str "[" (first message) "]")
+                                              ([target data]
+                                               (info (str "[" username "]")
                                                      (name loop-handle) "transitions to" target
-                                                     "with" (pr-str session-overrides))
-                                               (>!! (engine-channel target) (update-in message [1] (comp #(merge % session-overrides)
-                                                                                                         #(dissoc % :response))))))]
-                          (engine-fn message transition-fn)))
+                                                     "with" (pr-str data))
+                                               (>!! (engine-channel target) [username data])))]
+                          ;; TODO figure out how to avoid locking of the go-loop, it is not good.
+                          (locking (store/session-atom username)
+                            (engine-fn username
+                                       message
+                                       (store/session username)
+                                       (:response message)
+                                       transition-fn
+                                       (partial store/update-session username)))))
                       error-fn))
 
 (defn stop-message-loop
@@ -114,7 +121,7 @@
        :start
        (start-message-loop ~handle
                            (create-channel! ~handle)
-                           (fn [~'message] ~@code)
+                           (fn [~'username ~'message] ~@code)
                            nil)
 
        :stop
@@ -145,7 +152,7 @@
          (start-send-message-loop ~send-handle
                                   ~handle
                                   ~engine-channels-name
-                                  (fn [~'message ~'callback]
+                                  (fn [~'username ~'message ~'session ~'callback]
                                     ~(:send code))
                                   (fn [~'transition-to] ~(:error code)))
          :stop
@@ -155,7 +162,7 @@
          :start
          (start-parse-message-loop ~parse-handle
                                    ~engine-channels-name
-                                   (fn [~'message]
+                                   (fn [~'username ~'message ~'session ~'response]
                                      ~(:parse code))
                                    (fn [~'transition-to] ~(:error code)))
          :stop
@@ -165,7 +172,7 @@
          :start
          (start-process-message-loop ~process-handle
                                      ~engine-channels-name
-                                     (fn [~'message ~'transition-to]
+                                     (fn [~'username ~'message ~'session ~'response ~'transition-to ~'update-session]
                                        (let [~'channels engine-channel]
                                          ~(:process code)))
                                      (fn [~'transition-to] ~(:error code)))
