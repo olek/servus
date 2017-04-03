@@ -19,7 +19,7 @@
                        :server-instance (last response)}]
              (update-session #(merge % data))
              (transition-to :count-records)
-             (transition-to :create-job data))
+             (transition-to :create-job))
   :error (transition-to :finish))
 
 (create-callout-engine :count-records
@@ -47,6 +47,7 @@
 (create-callout-engine :create-batch
   :send [:bulk-request
          (s/join "/" ["job" (:job-id session) "batch"])
+         ;; rename sql to soql
          {:template "create-batch.sql"
           :data {:object "Case"
                  :fields "Subject"
@@ -132,12 +133,9 @@
   :send [:bulk-request
          (s/join "/" ["job" (:job-id session) "batch" (:batch-id message) "result"])
          nil]
-  :parse (let [batch-id (:batch-id message)
-               result-id (sf-api/parse-and-extract response :result)]
-           [batch-id result-id])
-  :process (let [[batch-id result-id] response]
-             (transition-to :collect-batch-result {:batch-id batch-id
-                                                   :result-id result-id}))
+  :parse (sf-api/parse-and-extract response :result)
+  :process (transition-to :collect-batch-result {:batch-id (:batch-id message)
+                                                 :result-id response})
   :error (transition-to :finish))
 
 (create-callout-engine :collect-batch-result

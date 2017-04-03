@@ -7,30 +7,7 @@
             [servus.salesforce-api :as sf-api]
             [servus.store :as store]))
 
-(defn start-simple-message-loop [handle ch engine-fn error-fn]
-  (let [stop-channel (chan)]
-    (go-loop [message :start]
-      (condp = message
-        :start
-        (info "Waiting for requests to" handle "engine...")
-
-        :stop-message-loop
-        (info "Not waiting for requests to" handle "engine anymore, exiting")
-
-        nil
-        (info "Duh, done with the" handle)
-
-        (try
-          (apply engine-fn message)
-          (catch Exception e
-            (error (str "Caught exception in " (name handle) ":") (str e)))))
-      (if (and message
-               (not= :stop-message-loop message))
-        (recur (first (alts! [stop-channel ch] :priority true)))
-        (close! stop-channel)))
-    stop-channel))
-
-(defn start-stepped-message-loop [handle ch engine-fn error-fn]
+(defn start-message-loop [handle ch engine-fn error-fn]
   (let [stop-channel (chan)]
   (go-loop [message :start]
     (condp = message
@@ -64,6 +41,8 @@
                             :data-request sf-api/data-request
                             :bulk-request sf-api/bulk-request})
 
+;; TODO 'process' transitions should not be executed immediately because of the potential errors aborting
+;; processing; they should be 'enqueued' only after 'process' code is finished.
 (defn transition-raw
   ([username from to]
    (transition-raw username from to nil))
@@ -85,52 +64,52 @@
             (partial store/update-session username)))
 
 (defn start-send-message-loop [loop-handle channel-name local-channels engine-fn error-fn]
-  (start-stepped-message-loop loop-handle
-                              (create-channel! channel-name)
-                              (fn [username message]
-                                (let [session (store/session username)
-                                      callback (fn [response]
-                                                 (info (str "[" username "]") (name loop-handle) "returned" (pr-str (:body response)))
-                                                 (>!! (local-channels :raw-response)
-                                                      [username (update message :response (constantly response))]))
-                                      data (engine-fn username message session callback)]
-                                  (when data
-                                    (let [request (first data)
-                                          args (concat [channel-name username (:session-id session) (:server-instance session)] (rest data) [callback])]
-                                      (apply (request-map request) args)))))
-                              (partial wrap-error-fn loop-handle error-fn)))
+  (start-message-loop loop-handle
+                      (create-channel! channel-name)
+                      (fn [username message]
+                        (let [session (store/session username)
+                              callback (fn [response]
+                                         (info (str "[" username "]") (name loop-handle) "returned" (pr-str (:body response)))
+                                         (>!! (local-channels :raw-response)
+                                              [username (update message :response (constantly response))]))
+                              data (engine-fn username message session callback)]
+                          (when data
+                            (let [request (first data)
+                                  args (concat [channel-name username (:session-id session) (:server-instance session)] (rest data) [callback])]
+                              (apply (request-map request) args)))))
+                      (partial wrap-error-fn loop-handle error-fn)))
 
 (defn start-parse-message-loop [loop-handle local-channels engine-fn error-fn]
   (let [wrapped-error-fn (partial wrap-error-fn loop-handle error-fn)]
-    (start-stepped-message-loop loop-handle
-                                (local-channels :raw-response)
-                                (fn [username message]
-                                  (let [http-response (:response message)
-                                        error? (> (:status http-response) 299)
-                                        response (when-not error?
-                                                   (engine-fn username message (store/session username)
-                                                              (:response message)))]
-                                    (if error?
-                                      (wrapped-error-fn http-response username message)
-                                      (do
-                                        (info (str "[" username "]") (name loop-handle) "returned" (pr-str response))
-                                        (>!! (local-channels :parsed-response)
-                                             [username (update message :response (constantly response))])))))
-                                wrapped-error-fn)))
+    (start-message-loop loop-handle
+                        (local-channels :raw-response)
+                        (fn [username message]
+                          (let [http-response (:response message)
+                                error? (> (:status http-response) 299)
+                                response (when-not error?
+                                           (engine-fn username message (store/session username)
+                                                      (:response message)))]
+                            (if error?
+                              (wrapped-error-fn http-response username message)
+                              (do
+                                (info (str "[" username "]") (name loop-handle) "returned" (pr-str response))
+                                (>!! (local-channels :parsed-response)
+                                     [username (update message :response (constantly response))])))))
+                        wrapped-error-fn)))
 
 (defn start-process-message-loop [loop-handle local-channels engine-fn error-fn]
-  (start-stepped-message-loop loop-handle
-                              (local-channels :parsed-response)
-                              (fn [username message]
-                                ;; TODO figure out how to avoid locking of the go-loop, it is not good.
-                                (locking (store/session-atom username)
-                                  (engine-fn username
-                                             message
-                                             (store/session username)
-                                             (:response message)
-                                             (partial transition-raw username loop-handle)
-                                             (partial store/update-session username))))
-                              (partial wrap-error-fn loop-handle error-fn)))
+  (start-message-loop loop-handle
+                      (local-channels :parsed-response)
+                      (fn [username message]
+                        ;; TODO figure out how to avoid locking of the go-loop, it is not good.
+                        (locking (store/session-atom username)
+                          (engine-fn username
+                                     message
+                                     (store/session username)
+                                     (:response message)
+                                     (partial transition-raw username loop-handle)
+                                     (partial store/update-session username))))
+                      (partial wrap-error-fn loop-handle error-fn)))
 
 (defn stop-message-loop
   ([control-ch]
@@ -143,7 +122,7 @@
   (let [engine-name (gensym (str "engine-" (name handle)))]
     `(defstate ^:private ~engine-name
        :start
-       (start-simple-message-loop ~handle
+       (start-message-loop ~handle
                                   (create-channel! ~handle)
                                   (fn [~'username ~'message] ~@code)
                                   nil)
