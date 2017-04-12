@@ -4,6 +4,7 @@
             [clojure.tools.logging :refer [info warn error]]
             [clojure.set :as set]
             [clojure.string :as s]
+            [clojure-csv.core :refer [parse-csv]]
             [servus.salesforce-api :as sf-api]
             [servus.engine-factory :refer [create-terminal-engine create-callout-engine]]))
 
@@ -41,21 +42,39 @@
            job-id)
   :process (do
              (update-session #(assoc % :job-id response))
-             (transition-to :create-batch))
+             (transition-to :create-planning-batch))
   :error (transition-to :finish))
 
-(create-callout-engine :create-batch
+(create-callout-engine :create-planning-batch
   :send [:bulk-request
          (s/join "/" ["job" (:job-id session) "batch"])
          ;; rename sql to soql
-         {:template "create-batch.sql"
-          :data {:object "Case"
-                 :fields "Subject"
-                 :limit 2}}]
+         {:template "create-planning-batch.sql"
+          :data {:object "Case"}}]
   :parse (sf-api/parse-and-extract response :id)
   :process (do
-             (update-session #(update % :queued-batch-ids set/union #{response}))
-             (transition-to :close-job)
+             (update-session #(merge % {:stage :planning
+                                        :planning-batch-id response}))
+             (transition-to :check-batch {:batch-id response}))
+  :error (transition-to :close-job))
+
+(create-callout-engine :create-batch
+  :send (let [planning-markers (:planning-markers session)
+              from (first planning-markers)
+              to (second planning-markers)]
+          [:bulk-request
+           (s/join "/" ["job" (:job-id session) "batch"])
+           ;; rename sql to soql
+           {:template "create-batch.sql"
+            :data {:object "Case"
+                   :fields "Subject"
+                   :from from
+                   :to to
+                   :limit 100}}])
+  :parse (sf-api/parse-and-extract response :id)
+  :process (do
+             (update-session (comp #(update % :queued-batch-ids set/union #{response})
+                                   #(update % :planning-markers (partial drop 1))))
              (transition-to :check-batches))
   :error (transition-to :close-job))
 
@@ -64,17 +83,26 @@
          (s/join "/" ["job" (:job-id session) "batch"])
          nil]
   :parse (sf-api/parse-and-extract-all response :id :state)
-  :process (let [prev-completed-batches (:completed-batch-ids session)
+  :process (let [planning-markers (:planning-markers session)
+                 prev-completed-batches (:completed-batch-ids session)
+                 planning-batch-id (:planning-batch-id session)
                  all-completed-batches (->> response
                                             (filter #(= "Completed" (last %)))
                                             (map first)
                                             set)
-                 new-completed-batches (set/difference all-completed-batches prev-completed-batches)]
+                 new-completed-batches (set/difference all-completed-batches prev-completed-batches #{planning-batch-id})]
              (update-session #(-> %
                                   (update :completed-batch-ids set/union new-completed-batches)
                                   (update :queued-batch-ids set/difference new-completed-batches)))
+             ;; TODO track/report batches in "Failed" state
              (doseq [batch-id new-completed-batches]
                (transition-to :collect-batch-result-ids {:batch-id batch-id}))
+             ;; TODO fix not fetching last block of ids
+             ;; TODO fix very sequential nature of batches
+             ;; TODO add code to auto-adjust batch size based on previous batches duration
+             (if (> (count planning-markers) 1)
+               (transition-to :create-batch)
+               (transition-to :close-job))
              (when (some #{"Queued"} (map last response))
                (let [times-attempted (get session :times-attempted 1)]
                  (if (< times-attempted 3)
@@ -89,45 +117,33 @@
                      (transition-to :finish))))))
   :error (transition-to :finish))
 
-;(create-callout-engine :check-batch
-;  :send (let [[username session] message]
-;          ;; TODO figure out way to handle more than one batch
-;          [:bulk-request
-;           (s/join "/" ["job" (:job-id session) "batch" (first (:queued-batch-ids session))])
-;           nil])
-;  :parse (let [session (last message)
-;               response (:response session)
-;               batch-state (sf-api/parse-and-extract response :state)
-;               batch-id (sf-api/parse-and-extract response :id)]
-;           [batch-id batch-state])
-;  :process (let [session (last message)
-;                 [batch-id batch-state] (:response session)
-;                 queued-batches (:queued-batch-ids session #{})
-;                 completed-batches (:completed-batch-ids session #{})]
-;             (condp = batch-state
-;               "Completed"
-;               (transition-to :collect-batch-result-ids {:queued-batch-ids (disj queued-batches #{batch-id})
-;                                                         :completed-batch-ids (conj queued-batches batch-id)
-;                                                         :times-attempted nil})
-;               "Not Processed"
-;               (comment "PK chunking enabled, real work done in extra batches")
+(create-callout-engine :check-batch
+  :send [:bulk-request
+         (s/join "/" ["job" (:job-id session) "batch" (:batch-id message)])
+         nil]
+  :parse (sf-api/parse-and-extract response :state)
+  :process (condp = response
+             "Completed"
+             (transition-to :collect-batch-result-ids message)
 
-;               "Queued"
-;               (let [times-attempted (get session :times-attempted 1)]
-;                 (if (< times-attempted 3)
-;                   (do
-;                     (warn "Postponing check-batch, attempted" times-attempted "times")
-;                     (go
-;                       (<! (timeout 5000))
-;                       (warn "Retrying check-batch, attempted" times-attempted "times")
-;                       (transition-to :check-batch {:times-attempted (inc times-attempted)})))
-;                   (do
-;                     (warn "Aborting retries of check-batch after" times-attempted "attempts")
-;                     (transition-to :close-job {:times-attempted nil}))))
+             "Queued"
+             (let [times-attempted (get session :times-attempted 1)]
+               (if (< times-attempted 3)
+                 (do
+                   (warn "Postponing check-batch, attempted" times-attempted "times")
+                   (go
+                     (<! (timeout 5000))
+                     (warn "Retrying check-batch, attempted" times-attempted "times")
+                     (transition-to :check-batch (assoc message :times-attempted (inc times-attempted)))))
+                 (do
+                   (warn "Aborting retries of check-batch after" times-attempted "attempts")
+                   (transition-to :close-job))))
 
-;               ;;"Failed" "InProgress"
-;               (transition-to :finish {:times-attempted nil})))
-;  :error (transition-to :finish))
+             ;;"Failed" "InProgress" "Not Processed"
+             (do
+               (warn "Unexpected batch state" response "- aborting")
+               (transition-to :close-job)))
+  :error (transition-to :close-job))
 
 (create-callout-engine :collect-batch-result-ids
   :send [:bulk-request
@@ -142,11 +158,21 @@
   :send [:bulk-request
          (s/join "/" [ "job" (:job-id session) "batch" (:batch-id message) "result" (:result-id message)])
          nil]
-  :parse (let [batch-id (:batch-id message)
-               result-id (:result-id message)
-               csv-text (:body response)]
-           [batch-id result-id csv-text])
-  :process (transition-to :drain)
+  :parse (let [csv-text (:body response)
+               csv-data (parse-csv csv-text)]
+           (info "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD" (pr-str csv-data))
+           csv-data)
+  :process (if (= :planning (:stage session))
+             (do
+               ;; TODO fix not fetching last block of ids
+               (update-session #(merge % {:stage :fetching
+                                          :planning-markers (->> response
+                                                                 rest
+                                                                 (map first)
+                                                                 (take-nth 2))}))
+               (transition-to :create-batch))
+             ;; TODO fix multiple draining
+             (transition-to :drain))
   :error (transition-to :finish))
 
 (create-callout-engine :close-job
@@ -166,6 +192,7 @@
   :error (transition-to :finish))
 
 (create-terminal-engine :finish
+  ;; TODO erase session on completion
   (info (str "[" username "]") "all processing finished"))
 
 ;(create-terminal-engine :trace

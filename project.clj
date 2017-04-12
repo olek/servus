@@ -3,18 +3,21 @@
   :url "https://en.wikipedia.org/wiki/Servus"
   :main servus.core
   :dependencies [[org.clojure/clojure "1.8.0"]
-                 [mount "0.1.10"]
 
-                 ; logging
+                 ;; logging
                  [org.clojure/tools.logging "0.3.1"]
                  [ch.qos.logback/logback-classic "1.1.7"]
 
-                 [http-kit "2.2.0"]
+                 ;; parsers/generators
                  [cheshire "5.6.3"]
-                 [compojure "1.5.1"]
+                 [clojure-csv/clojure-csv "2.0.1"]
                  [de.ubercode.clostache/clostache "1.4.0"]
-                 [org.clojure/core.async "0.2.395"]
-                 [environ "1.1.0"]]
+
+                 ;; other
+                 [environ "1.1.0"]
+                 [http-kit "2.2.0"]
+                 [mount "0.1.10"]
+                 [org.clojure/core.async "0.2.395"]]
 
   :plugins [[lein-environ "1.0.1"]
             [lein-var-file "0.3.1"]]
